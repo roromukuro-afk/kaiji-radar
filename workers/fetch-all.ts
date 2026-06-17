@@ -1,0 +1,726 @@
+/**
+ * 毎時巡回ワーカー
+ *
+ * GitHub Actions から hourly cron で実行される。
+ * 全情報ソースを巡回し、新着を保存・通知する。
+ *
+ * 優先順位 (障害時も維持):
+ * 1. TDnet / EDINET
+ * 2. 企業公式 / プレスリリース
+ * 3. 国内ニュース / 株式メディア
+ * 4. 海外英語ニュース
+ */
+
+import { createClient } from "@supabase/supabase-js";
+import {
+  fetchTdnetByCode,
+  fetchTdnetRecent,
+} from "../lib/fetchers/tdnet.js";
+import {
+  fetchEdinetByDate,
+  stockCodeToSecCode,
+  docTypeLabel,
+} from "../lib/fetchers/edinet.js";
+import {
+  fetchGoogleNewsJP,
+  fetchGoogleNewsEN,
+  fetchPRTimes,
+  fetchGenericRss,
+  detectPaywall,
+} from "../lib/fetchers/news.js";
+import {
+  checkRelevance,
+  translateTitleJa,
+  quickKeywordMatch,
+} from "../lib/processors/relevance.js";
+import { fetchAndStorePdf } from "../lib/processors/pdf.js";
+import {
+  sendPushToAll,
+  buildPushPayload,
+} from "../lib/notifications/web-push.js";
+import { sendErrorEmail, sendRecoveryEmail, sendPendingArticlesEmail } from "../lib/notifications/email.js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// Lookback window to avoid missing items near boundary
+const LOOKBACK_HOURS_NORMAL = 3;
+const LOOKBACK_HOURS_RECOVERY = 48; // 障害後の遡及取得上限
+const MAX_RETRIES = 3;
+
+interface StockProfile {
+  rss_urls: string[];
+  jp_keywords: string[];
+  en_keywords: string[];
+  official_url: string | null;
+  ir_url: string | null;
+  press_release_url: string | null;
+}
+
+interface StockRecord {
+  id: string;
+  code: string;
+  name: string;
+  name_en: string | null;
+  edinet_code: string | null;
+  sec_code: string | null;
+  stock_profiles: StockProfile | null;
+}
+
+async function main() {
+  console.log("[fetch-all] 巡回開始", new Date().toISOString());
+
+  const { data: jobRow } = await supabase
+    .from("fetch_jobs")
+    .insert({ job_type: "hourly", status: "running" })
+    .select("id")
+    .single();
+  const jobId = jobRow?.id;
+
+  // 障害復旧後の遡及取得: 前回実行からの経過時間を確認
+  const { data: lastRunSetting } = await supabase
+    .from("system_settings")
+    .select("value")
+    .eq("key", "last_hourly_run")
+    .single();
+
+  let lookbackHours = LOOKBACK_HOURS_NORMAL;
+  if (lastRunSetting?.value && lastRunSetting.value !== "null") {
+    const lastRun = new Date(JSON.parse(lastRunSetting.value));
+    const hoursSinceLastRun = (Date.now() - lastRun.getTime()) / (60 * 60 * 1000);
+    if (hoursSinceLastRun > LOOKBACK_HOURS_NORMAL * 2) {
+      // 通常の2倍以上空いていた = 障害・停止後の復旧
+      lookbackHours = Math.min(hoursSinceLastRun + 1, LOOKBACK_HOURS_RECOVERY);
+      console.log(`[fetch-all] 復旧モード: 直近 ${Math.round(lookbackHours)} 時間を遡及取得`);
+    }
+  }
+
+  const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000);
+
+  // Load active stocks
+  const { data: stocks, error: stocksErr } = await supabase
+    .from("stocks")
+    .select(`
+      id, code, name, name_en, edinet_code, sec_code,
+      stock_profiles (rss_urls, jp_keywords, en_keywords, official_url, ir_url, press_release_url)
+    `)
+    .eq("status", "active");
+
+  if (stocksErr || !stocks) {
+    console.error("[fetch-all] 銘柄取得失敗:", stocksErr);
+    if (jobId) await supabase.from("fetch_jobs").update({ status: "failed", error_message: String(stocksErr) }).eq("id", jobId);
+    return;
+  }
+
+  // Supabase returns related rows as arrays; normalize to single object
+  const normalizedStocks: StockRecord[] = stocks.map((s) => ({
+    ...s,
+    stock_profiles: Array.isArray(s.stock_profiles)
+      ? (s.stock_profiles[0] ?? null)
+      : s.stock_profiles,
+  }));
+
+  const results = {
+    tdnet: 0,
+    edinet: 0,
+    official: 0,
+    jp_news: 0,
+    en_news: 0,
+    errors: [] as string[],
+  };
+
+  // ============================
+  // 1. TDnet
+  // ============================
+  console.log("[fetch-all] TDnet 取得開始");
+  await updateHealth("tdnet", "checking");
+  let tdnetOk = false;
+  try {
+    const recentItems = await withRetry(() => fetchTdnetRecent(since));
+    const byCode = groupByCode(recentItems.filter((i) => normalizedStocks.some((s) => s.code === i.code)));
+
+    for (const stock of normalizedStocks) {
+      const codeItems = byCode[stock.code] ?? [];
+      // Also fetch per-code RSS for any we might have missed
+      const perCode = await withRetry(() => fetchTdnetByCode(stock.code, since));
+      const allItems = deduplicateByDocId([...codeItems, ...perCode]);
+
+      for (const item of allItems) {
+        const saved = await saveArticle({
+          source_type: "tdnet",
+          source_url: item.url,
+          tdnet_doc_id: item.docId,
+          title: item.title,
+          publisher: item.submitter,
+          published_at: item.publishedAt.toISOString(),
+          summary: null,
+          is_pdf: !!item.pdfUrl,
+          doc_type: item.docType,
+          stock,
+          relevance: "certain",
+        });
+        if (saved) {
+          results.tdnet++;
+          if (item.pdfUrl) {
+            await processPdf(item.pdfUrl, item.docId, "tdnet", saved.id);
+          }
+          await notifyArticle(saved, stock);
+        }
+      }
+      await sleep(200);
+    }
+    tdnetOk = true;
+    await updateHealth("tdnet", "ok");
+  } catch (err) {
+    results.errors.push(`TDnet: ${err}`);
+    await handleSourceError("tdnet", String(err));
+  }
+
+  // ============================
+  // 2. EDINET
+  // ============================
+  console.log("[fetch-all] EDINET 取得開始");
+  await updateHealth("edinet", "checking");
+  try {
+    const secCodes = normalizedStocks.map((s) => s.sec_code ?? stockCodeToSecCode(s.code));
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+
+    for (const date of [yesterday, today]) {
+      const items = await withRetry(() =>
+        fetchEdinetByDate(date, secCodes)
+      );
+
+      for (const item of items) {
+        const stock = findStockBySecCode(normalizedStocks, item.secCode ?? "");
+        if (!stock) continue;
+
+        const saved = await saveArticle({
+          source_type: "edinet",
+          source_url: `https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?S${item.docId}`,
+          edinet_doc_id: item.docId,
+          edinet_submitter_code: item.edinetCode,
+          edinet_doc_type_code: item.docTypeCode,
+          title: `${docTypeLabel(item.docTypeCode)}: ${item.docDescription}`,
+          publisher: item.filerName,
+          published_at: item.submitDateTime.toISOString(),
+          summary: null,
+          is_pdf: !!item.pdfUrl,
+          doc_type: docTypeLabel(item.docTypeCode),
+          stock,
+          relevance: "certain",
+        });
+
+        if (saved) {
+          results.edinet++;
+          if (item.pdfUrl) {
+            await processPdf(item.pdfUrl, item.docId, "edinet", saved.id);
+          }
+          await notifyArticle(saved, stock);
+        }
+      }
+      await sleep(1000);
+    }
+    await updateHealth("edinet", "ok");
+  } catch (err) {
+    results.errors.push(`EDINET: ${err}`);
+    await handleSourceError("edinet", String(err));
+  }
+
+  // ============================
+  // 3. 国内ニュース
+  // ============================
+  console.log("[fetch-all] 国内ニュース取得開始");
+  await updateHealth("jp_news", "checking");
+  try {
+    for (const stock of normalizedStocks) {
+      const profile = stock.stock_profiles;
+      const keywords = [
+        stock.name,
+        stock.code,
+        ...(profile?.jp_keywords ?? []),
+      ].filter(Boolean);
+
+      const newsItems = await fetchGoogleNewsJP(keywords.slice(0, 5), since);
+      const prItems = await fetchPRTimes(stock.name, since);
+
+      // Custom RSS feeds (企業公式、IR等)
+      const customItems = [];
+      for (const rssUrl of profile?.rss_urls ?? []) {
+        const items = await fetchGenericRss(rssUrl, "official", since);
+        customItems.push(...items);
+      }
+
+      for (const item of [...newsItems, ...prItems, ...customItems]) {
+        const isPaywall = detectPaywall(item.url);
+        const existing = await findExistingArticle(item.url);
+        if (existing) continue;
+
+        const match = quickKeywordMatch(
+          item.title + (item.summary ?? ""),
+          stock.name,
+          stock.code,
+          profile?.jp_keywords ?? []
+        );
+
+        let relevance: "certain" | "uncertain" | "irrelevant" = match
+          ? "certain"
+          : "uncertain";
+        let relevanceReason = "";
+
+        if (!match) {
+          const check = await checkRelevance(
+            item.title,
+            item.summary,
+            stock.code,
+            stock.name,
+            profile?.jp_keywords ?? []
+          );
+          relevance = check.result;
+          relevanceReason = check.reason;
+        }
+
+        if (relevance === "irrelevant") {
+          await logExclusion(item.url, item.title, "jp_news", stock.code, relevanceReason);
+          continue;
+        }
+
+        const saved = await saveArticle({
+          source_type: item.sourceType,
+          source_url: item.url,
+          title: item.title,
+          publisher: item.publisher,
+          published_at: item.publishedAt.toISOString(),
+          summary: item.summary,
+          is_paywalled: isPaywall,
+          stock,
+          relevance,
+          relevance_reason: relevanceReason,
+        });
+
+        if (saved) {
+          results.jp_news++;
+          await notifyArticle(saved, stock);
+        }
+      }
+      await sleep(500);
+    }
+    await updateHealth("jp_news", "ok");
+  } catch (err) {
+    results.errors.push(`JP news: ${err}`);
+    await handleSourceError("jp_news", String(err));
+  }
+
+  // ============================
+  // 4. 海外ニュース (英語)
+  // ============================
+  console.log("[fetch-all] 海外ニュース取得開始");
+  await updateHealth("en_news", "checking");
+  try {
+    for (const stock of normalizedStocks) {
+      const profile = stock.stock_profiles;
+      const keywords = [
+        stock.name_en ?? stock.name,
+        stock.code,
+        ...(profile?.en_keywords ?? []),
+      ].filter(Boolean);
+
+      const enItems = await fetchGoogleNewsEN(keywords.slice(0, 4), since);
+
+      for (const item of enItems) {
+        const existing = await findExistingArticle(item.url);
+        if (existing) continue;
+
+        const match = quickKeywordMatch(
+          item.title + (item.summary ?? ""),
+          stock.name_en ?? stock.name,
+          stock.code,
+          profile?.en_keywords ?? []
+        );
+
+        let relevance: "certain" | "uncertain" | "irrelevant" = match
+          ? "certain"
+          : "uncertain";
+        let relevanceReason = "";
+        let titleJa: string | null = null;
+
+        if (!match) {
+          const check = await checkRelevance(
+            item.title,
+            item.summary,
+            stock.code,
+            stock.name,
+            [...(profile?.jp_keywords ?? []), ...(profile?.en_keywords ?? [])]
+          );
+          relevance = check.result;
+          relevanceReason = check.reason;
+        }
+
+        if (relevance === "irrelevant") {
+          await logExclusion(item.url, item.title, "en_news", stock.code, relevanceReason);
+          continue;
+        }
+
+        // Translate title to Japanese
+        try {
+          titleJa = await translateTitleJa(item.title);
+        } catch {
+          titleJa = null;
+        }
+
+        const saved = await saveArticle({
+          source_type: "en_news",
+          source_url: item.url,
+          title: item.title,
+          title_ja: titleJa,
+          publisher: item.publisher,
+          published_at: item.publishedAt.toISOString(),
+          summary: item.summary,
+          is_overseas: true,
+          is_paywalled: detectPaywall(item.url),
+          stock,
+          relevance,
+          relevance_reason: relevanceReason,
+        });
+
+        if (saved) {
+          results.en_news++;
+          await notifyArticle(saved, stock);
+        }
+      }
+      await sleep(500);
+    }
+    await updateHealth("en_news", "ok");
+  } catch (err) {
+    results.errors.push(`EN news: ${err}`);
+    await handleSourceError("en_news", String(err));
+  }
+
+  // ============================
+  // Check for unsent notifications
+  // ============================
+  const { count: pendingCount } = await supabase
+    .from("articles")
+    .select("id", { count: "exact", head: true })
+    .eq("notification_sent", false)
+    .gte("notification_failed_count", 2);
+
+  if (pendingCount && pendingCount > 0) {
+    await sendPendingArticlesEmail(pendingCount);
+  }
+
+  // ============================
+  // Finalize job
+  // ============================
+  if (jobId) {
+    await supabase
+      .from("fetch_jobs")
+      .update({
+        status: results.errors.length === 0 ? "completed" : "failed",
+        completed_at: new Date().toISOString(),
+        articles_saved: results.tdnet + results.edinet + results.official + results.jp_news + results.en_news,
+        tdnet_count: results.tdnet,
+        edinet_count: results.edinet,
+        official_count: results.official,
+        jp_news_count: results.jp_news,
+        en_news_count: results.en_news,
+        error_message: results.errors.join("\n") || null,
+      })
+      .eq("id", jobId);
+  }
+
+  await supabase
+    .from("system_settings")
+    .upsert({ key: "last_hourly_run", value: `"${new Date().toISOString()}"`, updated_at: new Date().toISOString() });
+
+  console.log("[fetch-all] 完了:", results);
+}
+
+// ============================
+// Helper functions
+// ============================
+
+async function saveArticle(params: {
+  source_type: string;
+  source_url: string;
+  tdnet_doc_id?: string;
+  edinet_doc_id?: string;
+  edinet_submitter_code?: string;
+  edinet_doc_type_code?: string;
+  title: string;
+  title_ja?: string | null;
+  publisher?: string | null;
+  published_at?: string;
+  summary?: string | null;
+  is_pdf?: boolean;
+  is_paywalled?: boolean;
+  is_overseas?: boolean;
+  doc_type?: string | null;
+  stock: StockRecord;
+  relevance: "certain" | "uncertain" | "irrelevant";
+  relevance_reason?: string;
+}): Promise<{ id: string; [key: string]: any } | null> {
+  // Check for existing article with same doc ID or URL
+  const existingInfo = await findExistingArticle(
+    params.source_url, params.tdnet_doc_id, params.edinet_doc_id
+  );
+
+  if (existingInfo) {
+    // Detect updates: title change or content change indicates a correction/update
+    const titleChanged = existingInfo.title !== params.title;
+    if (titleChanged || existingInfo.is_update_candidate) {
+      // Save diff to article_updates
+      await supabase.from("article_updates").insert({
+        article_id: existingInfo.id,
+        previous_title: existingInfo.title,
+        new_title: params.title,
+        change_type: params.tdnet_doc_id ? "tdnet_correction" : "content_update",
+      });
+      // Mark the original article as having been updated
+      await supabase.from("articles")
+        .update({ is_update: true, updated_at: new Date().toISOString() })
+        .eq("id", existingInfo.id);
+    }
+    return null; // Already exists, don't create duplicate
+  }
+
+  const { data: article, error } = await supabase
+    .from("articles")
+    .insert({
+      source_type: params.source_type,
+      source_url: params.source_url,
+      tdnet_doc_id: params.tdnet_doc_id,
+      edinet_doc_id: params.edinet_doc_id,
+      edinet_submitter_code: params.edinet_submitter_code,
+      edinet_doc_type_code: params.edinet_doc_type_code,
+      title: params.title,
+      title_ja: params.title_ja ?? null,
+      publisher: params.publisher,
+      published_at: params.published_at,
+      summary: params.summary,
+      is_pdf: params.is_pdf ?? false,
+      is_paywalled: params.is_paywalled ?? false,
+      is_overseas: params.is_overseas ?? false,
+      doc_type: params.doc_type,
+      relevance: params.relevance,
+      relevance_reason: params.relevance_reason,
+    })
+    .select("id, source_type, title, title_ja, publisher, published_at, summary, relevance, is_overseas, source_url")
+    .single();
+
+  if (error || !article) {
+    if (error?.code !== "23505") {
+      console.error("[fetch-all] 記事保存失敗:", error);
+    }
+    return null;
+  }
+
+  // Link to stock
+  await supabase.from("article_stocks").insert({
+    article_id: article.id,
+    stock_id: params.stock.id,
+  });
+
+  return { ...article, stock_code: params.stock.code, stock_name: params.stock.name };
+}
+
+async function findExistingArticle(
+  url: string,
+  tdnetDocId?: string,
+  edinetDocId?: string
+): Promise<{ id: string; title: string; is_update_candidate: boolean } | null> {
+  // Check by TDnet doc ID first (most reliable)
+  if (tdnetDocId) {
+    const { data } = await supabase
+      .from("articles")
+      .select("id, title")
+      .eq("tdnet_doc_id", tdnetDocId)
+      .single();
+    if (data) return { ...data, is_update_candidate: false };
+  }
+  if (edinetDocId) {
+    const { data } = await supabase
+      .from("articles")
+      .select("id, title")
+      .eq("edinet_doc_id", edinetDocId)
+      .single();
+    if (data) return { ...data, is_update_candidate: false };
+  }
+  // Check by URL (may indicate a content update)
+  const { data } = await supabase
+    .from("articles")
+    .select("id, title")
+    .eq("source_url", url)
+    .single();
+  if (data) return { ...data, is_update_candidate: true };
+  return null;
+}
+
+async function notifyArticle(
+  article: { id: string; [key: string]: any },
+  stock: StockRecord
+): Promise<void> {
+  try {
+    const payload = buildPushPayload({
+      id: article.id,
+      source_type: article.source_type,
+      title: article.title,
+      title_ja: article.title_ja,
+      publisher: article.publisher,
+      published_at: article.published_at,
+      summary: article.summary,
+      relevance: article.relevance,
+      is_overseas: article.is_overseas,
+      source_url: article.source_url,
+      stock_code: stock.code,
+      stock_name: stock.name,
+    });
+    await sendPushToAll(payload, article.id);
+  } catch (err) {
+    console.error("[fetch-all] 通知失敗:", err);
+  }
+}
+
+async function processPdf(
+  pdfUrl: string,
+  docId: string,
+  sourceType: string,
+  articleId: string
+): Promise<void> {
+  try {
+    const result = await fetchAndStorePdf(pdfUrl, docId, sourceType);
+    const { data: pdf } = await supabase
+      .from("pdf_documents")
+      .insert({
+        article_id: articleId,
+        source_url: pdfUrl,
+        storage_path: result.storagePath,
+        file_hash: result.fileHash,
+        file_size_bytes: result.fileSizeBytes,
+        extracted_text: result.extractedText,
+        ocr_text: result.ocrText,
+        extraction_method: result.extractionMethod,
+        ocr_quality: result.ocrQuality,
+      })
+      .select("id")
+      .single();
+
+    if (pdf) {
+      await supabase.from("articles").update({ pdf_document_id: pdf.id }).eq("id", articleId);
+    }
+  } catch (err) {
+    console.error(`[fetch-all] PDF処理失敗 ${docId}:`, err);
+  }
+}
+
+async function updateHealth(source: string, status: "ok" | "failed" | "checking" | "degraded"): Promise<void> {
+  const now = new Date().toISOString();
+  const updateData: Record<string, any> = {
+    source,
+    status: status === "checking" ? "ok" : status,
+    checked_at: now,
+  };
+
+  if (status === "ok") {
+    updateData.last_success_at = now;
+    updateData.consecutive_failures = 0;
+    updateData.error_message = null;
+  }
+
+  await supabase.from("health_checks").upsert(updateData, { onConflict: "source" });
+}
+
+async function handleSourceError(source: string, errMsg: string): Promise<void> {
+  const { data: current } = await supabase
+    .from("health_checks")
+    .select("consecutive_failures")
+    .eq("source", source)
+    .single();
+
+  const failures = (current?.consecutive_failures ?? 0) + 1;
+  const now = new Date().toISOString();
+
+  await supabase.from("health_checks").upsert(
+    {
+      source,
+      status: "failed",
+      last_failure_at: now,
+      consecutive_failures: failures,
+      error_message: errMsg,
+      checked_at: now,
+    },
+    { onConflict: "source" }
+  );
+
+  if (failures >= 2) {
+    await sendErrorEmail(
+      `${source} 取得障害 (${failures}回連続失敗)`,
+      `${source} からの情報取得が ${failures} 回連続で失敗しました。\n\nエラー: ${errMsg}\n\n時刻: ${new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}`
+    );
+  }
+}
+
+async function logExclusion(
+  url: string,
+  title: string | null,
+  sourceType: string,
+  stockCode: string,
+  reason: string
+): Promise<void> {
+  await supabase.from("exclusion_logs").insert({
+    source_url: url,
+    title,
+    source_type: sourceType,
+    related_stock_code: stockCode,
+    exclusion_reason: reason,
+  });
+}
+
+function groupByCode<T extends { code: string }>(items: T[]): Record<string, T[]> {
+  return items.reduce((acc, item) => {
+    if (!acc[item.code]) acc[item.code] = [];
+    acc[item.code].push(item);
+    return acc;
+  }, {} as Record<string, T[]>);
+}
+
+function deduplicateByDocId<T extends { docId: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((i) => {
+    if (seen.has(i.docId)) return false;
+    seen.add(i.docId);
+    return true;
+  });
+}
+
+function findStockBySecCode(stocks: StockRecord[], secCode: string): StockRecord | null {
+  return (
+    stocks.find((s) => {
+      const expected = s.sec_code ?? s.code.padEnd(5, "0");
+      return expected === secCode;
+    }) ?? null
+  );
+}
+
+async function withRetry<T>(fn: () => Promise<T>, retries = MAX_RETRIES): Promise<T> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === retries - 1) throw err;
+      await sleep(2000 * (i + 1));
+    }
+  }
+  throw new Error("Max retries exceeded");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+main().catch((err) => {
+  console.error("[fetch-all] FATAL:", err);
+  process.exit(1);
+});
