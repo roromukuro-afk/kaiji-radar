@@ -29,7 +29,7 @@ const YANOSHIN_BASE = "https://webapi.yanoshin.jp/webapi/tdnet/list";
 const UA = "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)";
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
 
-function httpsGet(url: string, timeoutMs = 30000): Promise<string> {
+function httpsGet(url: string, timeoutMs = 8000): Promise<string> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { "User-Agent": UA } }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {

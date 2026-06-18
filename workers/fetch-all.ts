@@ -142,10 +142,7 @@ async function main() {
     const byCode = groupByCode(recentItems.filter((i) => normalizedStocks.some((s) => s.code === i.code)));
 
     for (const stock of normalizedStocks) {
-      const codeItems = byCode[stock.code] ?? [];
-      // Also fetch per-code RSS for any we might have missed
-      const perCode = await withRetry(() => fetchTdnetByCode(stock.code, since));
-      const allItems = deduplicateByDocId([...codeItems, ...perCode]);
+      const allItems = byCode[stock.code] ?? [];
 
       for (const item of allItems) {
         const saved = await saveArticle({
