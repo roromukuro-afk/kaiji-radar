@@ -27,6 +27,14 @@ export interface EdinetItem {
 
 const EDINET_BASE = "https://api.edinet-fsa.go.jp/api/v2";
 
+function edinetHeaders(): Record<string, string> {
+  const key = process.env.EDINET_API_KEY;
+  return {
+    "User-Agent": "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)",
+    ...(key ? { "Ocp-Apim-Subscription-Key": key } : {}),
+  };
+}
+
 // docTypeCodes that are especially important to capture for third-party filings
 const THIRD_PARTY_DOC_TYPES = new Set([
   "050", // 大量保有報告書
@@ -51,9 +59,7 @@ export async function fetchEdinetByDate(
   try {
     const url = `${EDINET_BASE}/documents.json?date=${dateStr}&type=2`;
     const res = await fetch(url, {
-      headers: {
-        "User-Agent": "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)",
-      },
+      headers: edinetHeaders(),
       signal: AbortSignal.timeout(20000),
     });
 

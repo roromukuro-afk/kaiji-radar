@@ -26,7 +26,8 @@ export interface TdnetItem {
   docType: string | null;
 }
 
-const YANOSHIN_BASE = "https://webapi.yanoshin.jp/webapi/tdnet/list";
+// yanoshin serves only over HTTP (HTTPS certificate not configured on their server)
+const YANOSHIN_BASE = "http://webapi.yanoshin.jp/webapi/tdnet/list";
 
 export async function fetchTdnetByCode(
   code: string,

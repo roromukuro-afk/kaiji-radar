@@ -9,14 +9,23 @@
 
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = "開示レーダー <noreply@kaiji-radar.app>";
 const TO = process.env.BACKUP_EMAIL!;
+
+function getResend(): Resend | null {
+  if (!process.env.RESEND_API_KEY) return null;
+  return new Resend(process.env.RESEND_API_KEY);
+}
 
 export async function sendErrorEmail(
   subject: string,
   body: string
 ): Promise<void> {
+  const resend = getResend();
+  if (!resend) {
+    console.log("[Email] RESEND_API_KEY未設定 — メール送信スキップ:", subject);
+    return;
+  }
   try {
     await resend.emails.send({
       from: FROM,
