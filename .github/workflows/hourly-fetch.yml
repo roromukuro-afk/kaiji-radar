@@ -32,4 +32,5 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           BACKUP_EMAIL: ${{ secrets.BACKUP_EMAIL }}
           NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
         run: npx tsx workers/fetch-all.ts

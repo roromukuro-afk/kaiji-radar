@@ -6,14 +6,12 @@
  *
  * 参考: やのしん WEB-API は 2007 年から公開され実績ある非公式 API。
  * 公式 TDnet API は月額 7 万円超のため採用外。
+ *
+ * 注: HTTP→HTTPS リダイレクトを伴うため fetch(redirect:'follow') を使用。
+ * rss-parser は redirect following 非対応のため不使用。
  */
 
-import RssParser from "rss-parser";
-
-const rssParser = new RssParser({
-  timeout: 15000,
-  headers: { "User-Agent": "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)" },
-});
+import { XMLParser } from "fast-xml-parser";
 
 export interface TdnetItem {
   docId: string;
@@ -26,8 +24,22 @@ export interface TdnetItem {
   docType: string | null;
 }
 
-// yanoshin serves only over HTTP (HTTPS certificate not configured on their server)
-const YANOSHIN_BASE = "http://webapi.yanoshin.jp/webapi/tdnet/list";
+const YANOSHIN_BASE = "https://webapi.yanoshin.jp/webapi/tdnet/list";
+const UA = "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)";
+const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+
+async function fetchRss(url: string): Promise<any[]> {
+  const res = await fetch(url, {
+    redirect: "follow",
+    headers: { "User-Agent": UA },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const xml = await res.text();
+  const parsed = xmlParser.parse(xml);
+  const items = parsed?.rss?.channel?.item ?? [];
+  return Array.isArray(items) ? items : [items];
+}
 
 export async function fetchTdnetByCode(
   code: string,
@@ -35,24 +47,25 @@ export async function fetchTdnetByCode(
 ): Promise<TdnetItem[]> {
   const url = `${YANOSHIN_BASE}/${code}.rss`;
   try {
-    const feed = await rssParser.parseURL(url);
+    const rawItems = await fetchRss(url);
     const items: TdnetItem[] = [];
 
-    for (const item of feed.items ?? []) {
+    for (const item of rawItems) {
       const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
       if (since && pubDate <= since) continue;
 
-      const docId = extractTdnetDocId(item.link ?? "");
-      const pdfUrl = extractTdnetPdfUrl(item.link ?? "");
+      const link = item.link ?? item.guid ?? "";
+      const docId = extractTdnetDocId(link);
+      const pdfUrl = extractTdnetPdfUrl(link);
 
       items.push({
         docId: docId ?? `tdnet-${code}-${pubDate.getTime()}`,
         code,
         title: item.title ?? "(タイトルなし)",
         publishedAt: pubDate,
-        url: item.link ?? "",
+        url: link,
         pdfUrl,
-        submitter: feed.title ?? "",
+        submitter: "",
         docType: extractDocType(item.title ?? ""),
       });
     }
@@ -66,15 +79,16 @@ export async function fetchTdnetByCode(
 export async function fetchTdnetRecent(since: Date): Promise<TdnetItem[]> {
   const url = `${YANOSHIN_BASE}/recent.rss`;
   try {
-    const feed = await rssParser.parseURL(url);
+    const rawItems = await fetchRss(url);
     const items: TdnetItem[] = [];
 
-    for (const item of feed.items ?? []) {
+    for (const item of rawItems) {
       const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
       if (pubDate <= since) continue;
 
-      const docId = extractTdnetDocId(item.link ?? "");
-      const codeMatch = item.link?.match(/\/(\d{4})\//);
+      const link = item.link ?? item.guid ?? "";
+      const docId = extractTdnetDocId(link);
+      const codeMatch = link.match(/\/(\d{4})\//);
       const code = codeMatch?.[1] ?? "";
 
       items.push({
@@ -82,8 +96,8 @@ export async function fetchTdnetRecent(since: Date): Promise<TdnetItem[]> {
         code,
         title: item.title ?? "(タイトルなし)",
         publishedAt: pubDate,
-        url: item.link ?? "",
-        pdfUrl: extractTdnetPdfUrl(item.link ?? ""),
+        url: link,
+        pdfUrl: extractTdnetPdfUrl(link),
         submitter: item["dc:creator"] ?? "",
         docType: extractDocType(item.title ?? ""),
       });
@@ -102,10 +116,7 @@ async function fetchTdnetDirectFallback(
   try {
     const url = `https://www.release.tdnet.info/inbs/I_list_NF_${code}.html`;
     const res = await fetch(url, {
-      headers: {
-        "User-Agent": "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)",
-        Accept: "text/html",
-      },
+      headers: { "User-Agent": UA, Accept: "text/html" },
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) return [];
@@ -120,7 +131,6 @@ async function fetchTdnetDirectFallback(
 
 function parseTdnetHtml(html: string, code: string, since?: Date): TdnetItem[] {
   const items: TdnetItem[] = [];
-  // release.tdnet.info のリスト行パターン
   const rowRegex =
     /<td[^>]*class="[^"]*listed_date[^"]*"[^>]*>([\d/\s:]+)<\/td>[\s\S]*?<td[^>]*class="[^"]*listed_local_name[^"]*"[^>]*>([\s\S]*?)<\/td>[\s\S]*?href="([^"]+\.pdf)"[^>]*>([\s\S]*?)<\/a>/gi;
 
