@@ -1,16 +1,17 @@
 /**
  * TDnet 適時開示取得
  *
- * やのしん WEB-API (http://webapi.yanoshin.jp/tdnet/) を一次ソースとして使用。
+ * やのしん WEB-API (https://webapi.yanoshin.jp/webapi/tdnet/) を一次ソースとして使用。
  * 取得失敗時は release.tdnet.info 公開ページから取得する。
  *
  * 参考: やのしん WEB-API は 2007 年から公開され実績ある非公式 API。
  * 公式 TDnet API は月額 7 万円超のため採用外。
  *
- * 注: HTTP→HTTPS リダイレクトを伴うため fetch(redirect:'follow') を使用。
- * rss-parser は redirect following 非対応のため不使用。
+ * 注: undici (Node fetch) の connectTimeout がデフォルト 10s で yanoshin に届かない。
+ * Node.js 組み込みの https.get() を使用することで回避。
  */
 
+import https from "https";
 import { XMLParser } from "fast-xml-parser";
 
 export interface TdnetItem {
@@ -28,14 +29,34 @@ const YANOSHIN_BASE = "https://webapi.yanoshin.jp/webapi/tdnet/list";
 const UA = "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)";
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
 
-async function fetchRss(url: string): Promise<any[]> {
-  const res = await fetch(url, {
-    redirect: "follow",
-    headers: { "User-Agent": UA },
-    signal: AbortSignal.timeout(20000),
+function httpsGet(url: string, timeoutMs = 30000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { "User-Agent": UA } }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        req.destroy();
+        httpsGet(res.headers.location, timeoutMs).then(resolve).catch(reject);
+        return;
+      }
+      if (!res.statusCode || res.statusCode >= 400) {
+        req.destroy();
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      res.on("data", (d) => chunks.push(d));
+      res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      res.on("error", reject);
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      reject(new Error(`Request timed out after ${timeoutMs}ms`));
+    });
+    req.on("error", reject);
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const xml = await res.text();
+}
+
+async function fetchRss(url: string): Promise<any[]> {
+  const xml = await httpsGet(url);
   const parsed = xmlParser.parse(xml);
   const items = parsed?.rss?.channel?.item ?? [];
   return Array.isArray(items) ? items : [items];
