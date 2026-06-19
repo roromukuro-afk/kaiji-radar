@@ -15,6 +15,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   fetchTdnetByCode,
   fetchTdnetRecent,
+  fetchTdnetByCodeDirect,
 } from "../lib/fetchers/tdnet.js";
 import {
   fetchEdinetByDate,
@@ -138,7 +139,24 @@ async function main() {
   await updateHealth("tdnet", "checking");
   let tdnetOk = false;
   try {
-    const recentItems = await withRetry(() => fetchTdnetRecent(since));
+    let recentItems = await withRetry(() => fetchTdnetRecent(since));
+
+    // yanoshinがGitHub Actions IPをブロックしている場合は0件になる
+    // その場合はYahoo Finance Japan からスクレイプする
+    if (recentItems.length === 0) {
+      console.log("[TDnet] yanoshin 0件 → Yahoo Finance Japan フォールバック");
+      const directItems: typeof recentItems = [];
+      for (const stock of normalizedStocks) {
+        const items = await fetchTdnetByCodeDirect(stock.code, since);
+        directItems.push(...items);
+        await sleep(400);
+      }
+      if (directItems.length > 0) {
+        recentItems = directItems;
+        console.log(`[TDnet] Yahoo Finance Japan から ${recentItems.length} 件取得`);
+      }
+    }
+
     const byCode = groupByCode(recentItems.filter((i) => normalizedStocks.some((s) => s.code === i.code)));
 
     for (const stock of normalizedStocks) {

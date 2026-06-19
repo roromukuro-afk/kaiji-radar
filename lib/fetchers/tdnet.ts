@@ -1,8 +1,11 @@
 /**
  * TDnet 適時開示取得
  *
- * やのしん WEB-API (https://webapi.yanoshin.jp/webapi/tdnet/) を一次ソースとして使用。
- * 取得失敗時は release.tdnet.info 公開ページから取得する。
+ * 一次ソース: やのしん WEB-API (https://webapi.yanoshin.jp/webapi/tdnet/)
+ * フォールバック: Yahoo Finance Japan (https://finance.yahoo.co.jp/quote/{code}.T/disclosure)
+ *   - yanoshin が GitHub Actions IP をブロックする場合に使用
+ *   - Yahoo Finance Japan は SSR でページ内に開示データを含むため HTML スクレイピング可能
+ *   - TDnet docId = "1401" + Yahoo 14桁ファイルID で復元可能
  *
  * 参考: やのしん WEB-API は 2007 年から公開され実績ある非公式 API。
  * 公式 TDnet API は月額 7 万円超のため採用外。
@@ -27,11 +30,13 @@ export interface TdnetItem {
 
 const YANOSHIN_BASE = "https://webapi.yanoshin.jp/webapi/tdnet/list";
 const UA = "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)";
+const UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
 
-function httpsGet(url: string, timeoutMs = 8000): Promise<string> {
+function httpsGet(url: string, timeoutMs = 8000, browserUa = false): Promise<string> {
+  const ua = browserUa ? UA_BROWSER : UA;
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { "User-Agent": UA } }, (res) => {
+    const req = https.get(url, { headers: { "User-Agent": ua, "Accept-Language": "ja,en;q=0.9" } }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         req.destroy();
         httpsGet(res.headers.location, timeoutMs).then(resolve).catch(reject);
@@ -93,7 +98,7 @@ export async function fetchTdnetByCode(
     return items;
   } catch (err) {
     console.error(`[TDnet] やのしん RSS 取得失敗 ${code}:`, err);
-    return fetchTdnetDirectFallback(code, since);
+    return fetchTdnetByCodeDirect(code, since);
   }
 }
 
@@ -130,43 +135,52 @@ export async function fetchTdnetRecent(since: Date): Promise<TdnetItem[]> {
   }
 }
 
-async function fetchTdnetDirectFallback(
+// Yahoo Finance Japan の適時開示ページからスクレイプ
+// yanoshin が GitHub Actions IP をブロックする場合のフォールバック
+// URL: https://finance.yahoo.co.jp/quote/{code}.T/disclosure
+// TDnet docId = "1401" + Yahoo 14桁ファイルID で復元
+export async function fetchTdnetByCodeDirect(
   code: string,
   since?: Date
 ): Promise<TdnetItem[]> {
   try {
-    const url = `https://www.release.tdnet.info/inbs/I_list_NF_${code}.html`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": UA, Accept: "text/html" },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) return [];
-
-    const html = await res.text();
-    return parseTdnetHtml(html, code, since);
+    const url = `https://finance.yahoo.co.jp/quote/${code}.T/disclosure`;
+    const html = await httpsGet(url, 20000, true);
+    return parseYahooFinanceHtml(html, code, since);
   } catch (err) {
-    console.error(`[TDnet] フォールバック失敗 ${code}:`, err);
+    console.error(`[TDnet] Yahoo Finance 取得失敗 ${code}:`, err);
     return [];
   }
 }
 
-function parseTdnetHtml(html: string, code: string, since?: Date): TdnetItem[] {
+function parseYahooFinanceHtml(html: string, code: string, since?: Date): TdnetItem[] {
   const items: TdnetItem[] = [];
-  const rowRegex =
-    /<td[^>]*class="[^"]*listed_date[^"]*"[^>]*>([\d/\s:]+)<\/td>[\s\S]*?<td[^>]*class="[^"]*listed_local_name[^"]*"[^>]*>([\s\S]*?)<\/td>[\s\S]*?href="([^"]+\.pdf)"[^>]*>([\s\S]*?)<\/a>/gi;
-
+  const articleRegex = /<article[^>]*>[\s\S]*?<\/article>/g;
   let match;
-  while ((match = rowRegex.exec(html)) !== null) {
-    const dateStr = match[1].trim();
-    const pubDate = new Date(dateStr.replace(/\//g, "-").trim());
+
+  while ((match = articleRegex.exec(html)) !== null) {
+    const art = match[0];
+    if (!art.includes("TDnet")) continue;
+
+    const hrefMatch = art.match(/href="(https:\/\/finance-frontend[^"]+\.pdf)"/);
+    const titleMatch = art.match(/<h3[^>]*>([^<]+)<\/h3>/);
+    const dateMatch = art.match(/dateTime="([^"]+)"/);
+
+    if (!hrefMatch || !titleMatch || !dateMatch) continue;
+
+    const pubDate = new Date(dateMatch[1]);
     if (since && pubDate <= since) continue;
 
-    const pdfPath = match[3];
-    const pdfUrl = pdfPath.startsWith("http")
-      ? pdfPath
-      : `https://www.release.tdnet.info${pdfPath}`;
-    const title = match[4].replace(/<[^>]+>/g, "").trim();
-    const docId = pdfPath.match(/\/(\d{18})/)?.[1] ?? `tdnet-${code}-${pubDate.getTime()}`;
+    const pdfUrl = hrefMatch[1];
+    const fileMatch = pdfUrl.match(/\/(\d+)\.pdf$/);
+    const yahooDocId = fileMatch?.[1];
+    // TDnet 18桁 docId = "1401" + Yahoo 14桁ファイルID
+    const docId =
+      yahooDocId && yahooDocId.length === 14
+        ? `1401${yahooDocId}`
+        : yahooDocId ?? `yahoo-${code}-${pubDate.getTime()}`;
+
+    const title = titleMatch[1].trim();
 
     items.push({
       docId,
@@ -181,6 +195,7 @@ function parseTdnetHtml(html: string, code: string, since?: Date): TdnetItem[] {
   }
   return items;
 }
+
 
 function extractTdnetDocId(url: string): string | null {
   const match = url.match(/(\d{18})/);
