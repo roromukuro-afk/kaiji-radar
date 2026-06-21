@@ -34,7 +34,7 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Public paths (no auth required)
-  const publicPaths = ["/login", "/api/auth", "/sw.js", "/icons", "/_next"];
+  const publicPaths = ["/login", "/api/auth", "/sw.js", "/icons", "/_next", "/manifest.webmanifest", "/favicon"];
   if (publicPaths.some((p) => pathname.startsWith(p))) {
     return supabaseResponse;
   }
