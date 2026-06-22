@@ -123,14 +123,24 @@ async function main() {
       : s.stock_profiles,
   }));
 
+  const startTime = Date.now();
+
+  type SourceStats = { candidates: number; saved: number; skipped: number; updated: number; errors: number };
+  const mkSrc = (): SourceStats => ({ candidates: 0, saved: 0, skipped: 0, updated: 0, errors: 0 });
+
   const results = {
-    tdnet: 0,
-    edinet: 0,
-    official: 0,
-    jp_news: 0,
-    en_news: 0,
+    per_source: {
+      tdnet:    mkSrc(),
+      edinet:   mkSrc(),
+      official: mkSrc(),
+      jp_news:  mkSrc(),
+      en_news:  mkSrc(),
+    },
     errors: [] as string[],
   };
+
+  // Shorthands for backward-compat
+  const src = results.per_source;
 
   // ============================
   // 1. TDnet
@@ -163,7 +173,8 @@ async function main() {
       const allItems = byCode[stock.code] ?? [];
 
       for (const item of allItems) {
-        const saved = await saveArticle({
+        src.tdnet.candidates++;
+        const r = await saveArticle({
           source_type: "tdnet",
           source_url: item.url,
           tdnet_doc_id: item.docId,
@@ -176,16 +187,21 @@ async function main() {
           stock,
           relevance: "certain",
         });
-        if (saved) {
-          results.tdnet++;
-          if (item.pdfUrl) {
-            await processPdf(item.pdfUrl, item.docId, "tdnet", saved.id);
-          }
-          await notifyArticle(saved, stock);
+        if (r.outcome === "new") {
+          src.tdnet.saved++;
+          if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "tdnet", r.article.id);
+          await notifyArticle(r.article, stock);
+        } else if (r.outcome === "duplicate") {
+          src.tdnet.skipped++;
+        } else if (r.outcome === "updated") {
+          src.tdnet.updated++;
+        } else {
+          src.tdnet.errors++;
         }
       }
       await sleep(200);
     }
+    console.log(`[TDnet] candidates=${src.tdnet.candidates} saved=${src.tdnet.saved} skipped=${src.tdnet.skipped}`);
     tdnetOk = true;
     await updateHealth("tdnet", "ok");
   } catch (err) {
@@ -219,7 +235,8 @@ async function main() {
         const stock = findStockBySecCode(normalizedStocks, item.secCode ?? "");
         if (!stock) continue;
 
-        const saved = await saveArticle({
+        src.edinet.candidates++;
+        const r = await saveArticle({
           source_type: "edinet",
           source_url: `https://disclosure2.edinet-fsa.go.jp/WZEK0040.aspx?S${item.docId}`,
           edinet_doc_id: item.docId,
@@ -235,13 +252,13 @@ async function main() {
           relevance: "certain",
         });
 
-        if (saved) {
-          results.edinet++;
-          if (item.pdfUrl) {
-            await processPdf(item.pdfUrl, item.docId, "edinet", saved.id);
-          }
-          await notifyArticle(saved, stock);
-        }
+        if (r.outcome === "new") {
+          src.edinet.saved++;
+          if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "edinet", r.article.id);
+          await notifyArticle(r.article, stock);
+        } else if (r.outcome === "duplicate") { src.edinet.skipped++;
+        } else if (r.outcome === "updated")   { src.edinet.updated++;
+        } else                                { src.edinet.errors++; }
       }
       await sleep(1000);
     }
@@ -277,9 +294,10 @@ async function main() {
       }
 
       for (const item of [...newsItems, ...prItems, ...customItems]) {
+        src.jp_news.candidates++;
         const isPaywall = detectPaywall(item.url);
         const existing = await findExistingArticle(item.url);
-        if (existing) continue;
+        if (existing) { src.jp_news.skipped++; continue; }
 
         const match = quickKeywordMatch(
           item.title + (item.summary ?? ""),
@@ -288,18 +306,12 @@ async function main() {
           profile?.jp_keywords ?? []
         );
 
-        let relevance: "certain" | "uncertain" | "irrelevant" = match
-          ? "certain"
-          : "uncertain";
+        let relevance: "certain" | "uncertain" | "irrelevant" = match ? "certain" : "uncertain";
         let relevanceReason = "";
 
         if (!match) {
           const check = await checkRelevance(
-            item.title,
-            item.summary,
-            stock.code,
-            stock.name,
-            profile?.jp_keywords ?? []
+            item.title, item.summary, stock.code, stock.name, profile?.jp_keywords ?? []
           );
           relevance = check.result;
           relevanceReason = check.reason;
@@ -310,7 +322,7 @@ async function main() {
           continue;
         }
 
-        const saved = await saveArticle({
+        const r = await saveArticle({
           source_type: item.sourceType,
           source_url: item.url,
           title: item.title,
@@ -323,10 +335,10 @@ async function main() {
           relevance_reason: relevanceReason,
         });
 
-        if (saved) {
-          results.jp_news++;
-          await notifyArticle(saved, stock);
-        }
+        if (r.outcome === "new") { src.jp_news.saved++; await notifyArticle(r.article, stock);
+        } else if (r.outcome === "duplicate") { src.jp_news.skipped++;
+        } else if (r.outcome === "updated")   { src.jp_news.updated++;
+        } else                                { src.jp_news.errors++; }
       }
       await sleep(500);
     }
@@ -353,8 +365,9 @@ async function main() {
       const enItems = await fetchGoogleNewsEN(keywords.slice(0, 4), since);
 
       for (const item of enItems) {
+        src.en_news.candidates++;
         const existing = await findExistingArticle(item.url);
-        if (existing) continue;
+        if (existing) { src.en_news.skipped++; continue; }
 
         const match = quickKeywordMatch(
           item.title + (item.summary ?? ""),
@@ -363,18 +376,13 @@ async function main() {
           profile?.en_keywords ?? []
         );
 
-        let relevance: "certain" | "uncertain" | "irrelevant" = match
-          ? "certain"
-          : "uncertain";
+        let relevance: "certain" | "uncertain" | "irrelevant" = match ? "certain" : "uncertain";
         let relevanceReason = "";
         let titleJa: string | null = null;
 
         if (!match) {
           const check = await checkRelevance(
-            item.title,
-            item.summary,
-            stock.code,
-            stock.name,
+            item.title, item.summary, stock.code, stock.name,
             [...(profile?.jp_keywords ?? []), ...(profile?.en_keywords ?? [])]
           );
           relevance = check.result;
@@ -386,14 +394,9 @@ async function main() {
           continue;
         }
 
-        // Translate title to Japanese
-        try {
-          titleJa = await translateTitleJa(item.title);
-        } catch {
-          titleJa = null;
-        }
+        try { titleJa = await translateTitleJa(item.title); } catch { titleJa = null; }
 
-        const saved = await saveArticle({
+        const r = await saveArticle({
           source_type: "en_news",
           source_url: item.url,
           title: item.title,
@@ -408,10 +411,10 @@ async function main() {
           relevance_reason: relevanceReason,
         });
 
-        if (saved) {
-          results.en_news++;
-          await notifyArticle(saved, stock);
-        }
+        if (r.outcome === "new") { src.en_news.saved++; await notifyArticle(r.article, stock);
+        } else if (r.outcome === "duplicate") { src.en_news.skipped++;
+        } else if (r.outcome === "updated")   { src.en_news.updated++;
+        } else                                { src.en_news.errors++; }
       }
       await sleep(500);
     }
@@ -437,19 +440,40 @@ async function main() {
   // ============================
   // Finalize job
   // ============================
+  const durationSeconds = (Date.now() - startTime) / 1000;
+  const totalSaved    = src.tdnet.saved + src.edinet.saved + src.official.saved + src.jp_news.saved + src.en_news.saved;
+  const totalFound    = src.tdnet.candidates + src.edinet.candidates + src.official.candidates + src.jp_news.candidates + src.en_news.candidates;
+  const totalSkipped  = src.tdnet.skipped + src.edinet.skipped + src.official.skipped + src.jp_news.skipped + src.en_news.skipped;
+  const totalUpdated  = src.tdnet.updated + src.edinet.updated + src.official.updated + src.jp_news.updated + src.en_news.updated;
+
+  console.log(`[fetch-all] 完了: 対象銘柄=${normalizedStocks.length} 候補=${totalFound} 保存=${totalSaved} スキップ=${totalSkipped} 更新=${totalUpdated} 実行時間=${Math.round(durationSeconds)}s`);
+
   if (jobId) {
     await supabase
       .from("fetch_jobs")
       .update({
         status: results.errors.length === 0 ? "completed" : "failed",
         completed_at: new Date().toISOString(),
-        articles_saved: results.tdnet + results.edinet + results.official + results.jp_news + results.en_news,
-        tdnet_count: results.tdnet,
-        edinet_count: results.edinet,
-        official_count: results.official,
-        jp_news_count: results.jp_news,
-        en_news_count: results.en_news,
+        articles_found: totalFound,
+        articles_saved: totalSaved,
+        tdnet_count: src.tdnet.saved,
+        edinet_count: src.edinet.saved,
+        official_count: src.official.saved,
+        jp_news_count: src.jp_news.saved,
+        en_news_count: src.en_news.saved,
         error_message: results.errors.join("\n") || null,
+        source_results: {
+          stocks_count: normalizedStocks.length,
+          duration_seconds: Math.round(durationSeconds * 10) / 10,
+          total: { candidates: totalFound, saved: totalSaved, skipped: totalSkipped, updated: totalUpdated },
+          per_source: {
+            tdnet:    src.tdnet,
+            edinet:   src.edinet,
+            official: src.official,
+            jp_news:  src.jp_news,
+            en_news:  src.en_news,
+          },
+        },
       })
       .eq("id", jobId);
   }
@@ -457,13 +481,18 @@ async function main() {
   await supabase
     .from("system_settings")
     .upsert({ key: "last_hourly_run", value: `"${new Date().toISOString()}"`, updated_at: new Date().toISOString() });
-
-  console.log("[fetch-all] 完了:", results);
 }
 
 // ============================
 // Helper functions
 // ============================
+
+type ArticleData = { id: string; [key: string]: any };
+type SaveResult =
+  | { outcome: "new"; article: ArticleData }
+  | { outcome: "duplicate" }
+  | { outcome: "updated" }
+  | { outcome: "error" };
 
 async function saveArticle(params: {
   source_type: string;
@@ -484,29 +513,28 @@ async function saveArticle(params: {
   stock: StockRecord;
   relevance: "certain" | "uncertain" | "irrelevant";
   relevance_reason?: string;
-}): Promise<{ id: string; [key: string]: any } | null> {
+}): Promise<SaveResult> {
   // Check for existing article with same doc ID or URL
   const existingInfo = await findExistingArticle(
     params.source_url, params.tdnet_doc_id, params.edinet_doc_id
   );
 
   if (existingInfo) {
-    // Detect updates: title change or content change indicates a correction/update
+    // Detect updates: title change indicates a correction/update
     const titleChanged = existingInfo.title !== params.title;
     if (titleChanged || existingInfo.is_update_candidate) {
-      // Save diff to article_updates
       await supabase.from("article_updates").insert({
         article_id: existingInfo.id,
         previous_title: existingInfo.title,
         new_title: params.title,
         change_type: params.tdnet_doc_id ? "tdnet_correction" : "content_update",
       });
-      // Mark the original article as having been updated
       await supabase.from("articles")
         .update({ is_update: true, updated_at: new Date().toISOString() })
         .eq("id", existingInfo.id);
+      return { outcome: "updated" };
     }
-    return null; // Already exists, don't create duplicate
+    return { outcome: "duplicate" };
   }
 
   const { data: article, error } = await supabase
@@ -534,10 +562,11 @@ async function saveArticle(params: {
     .single();
 
   if (error || !article) {
-    if (error?.code !== "23505") {
-      console.error("[fetch-all] 記事保存失敗:", error);
+    if (error?.code === "23505") {
+      return { outcome: "duplicate" };
     }
-    return null;
+    console.error("[fetch-all] 記事保存失敗:", error);
+    return { outcome: "error" };
   }
 
   // Link to stock
@@ -546,7 +575,7 @@ async function saveArticle(params: {
     stock_id: params.stock.id,
   });
 
-  return { ...article, stock_code: params.stock.code, stock_name: params.stock.name };
+  return { outcome: "new", article: { ...article, stock_code: params.stock.code, stock_name: params.stock.name } };
 }
 
 async function findExistingArticle(

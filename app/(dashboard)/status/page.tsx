@@ -11,6 +11,27 @@ type HealthCheck = {
   status: string;
 };
 
+type SourceStats = {
+  candidates: number;
+  saved: number;
+  skipped: number;
+  updated: number;
+  errors: number;
+};
+
+type SourceResults = {
+  stocks_count?: number;
+  duration_seconds?: number;
+  total?: { candidates: number; saved: number; skipped: number; updated: number };
+  per_source?: {
+    tdnet?: SourceStats;
+    edinet?: SourceStats;
+    official?: SourceStats;
+    jp_news?: SourceStats;
+    en_news?: SourceStats;
+  };
+};
+
 type FetchJob = {
   id: string;
   started_at: string;
@@ -24,6 +45,7 @@ type FetchJob = {
   jp_news_count: number;
   en_news_count: number;
   error_message: string | null;
+  source_results: SourceResults | null;
 };
 
 type BackupLog = {
@@ -120,26 +142,7 @@ export default function StatusPage() {
         {data.recent_jobs.length === 0 ? (
           <p className="text-sm text-zinc-400">ジョブ履歴なし</p>
         ) : data.recent_jobs.map((j) => (
-          <div key={j.id} className="rounded-xl border border-zinc-100 dark:border-zinc-800 p-3 space-y-1">
-            <div className="flex items-center justify-between gap-2">
-              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                j.status === "completed" ? "bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200" :
-                j.status === "running" ? "bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200" :
-                "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200"
-              }`}>
-                {j.status === "completed" ? "完了" : j.status === "running" ? "実行中" : "エラー"}
-              </span>
-              <span className="text-xs text-zinc-400">{formatRelative(j.started_at)}</span>
-            </div>
-            {j.status === "completed" && (
-              <p className="text-xs text-zinc-500">
-                TDnet {j.tdnet_count} / EDINET {j.edinet_count} / 公式 {j.official_count} / 国内 {j.jp_news_count} / 海外 {j.en_news_count} 件
-              </p>
-            )}
-            {j.error_message && (
-              <p className="text-xs text-red-500 truncate">{j.error_message}</p>
-            )}
-          </div>
+          <FetchJobCard key={j.id} job={j} />
         ))}
       </section>
 
@@ -167,6 +170,62 @@ export default function StatusPage() {
           </div>
         ))}
       </section>
+    </div>
+  );
+}
+
+function FetchJobCard({ job: j }: { job: FetchJob }) {
+  const sr = j.source_results;
+  const ps = sr?.per_source;
+  return (
+    <div className="rounded-xl border border-zinc-100 dark:border-zinc-800 p-3 space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+          j.status === "completed" ? "bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200" :
+          j.status === "running"   ? "bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200" :
+          "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200"
+        }`}>
+          {j.status === "completed" ? "完了" : j.status === "running" ? "実行中" : "エラー"}
+        </span>
+        <div className="flex items-center gap-2">
+          {sr?.duration_seconds != null && (
+            <span className="text-xs text-zinc-400">{sr.duration_seconds}s</span>
+          )}
+          {sr?.stocks_count != null && (
+            <span className="text-xs text-zinc-400">{sr.stocks_count}銘柄</span>
+          )}
+          <span className="text-xs text-zinc-400">{formatRelative(j.started_at)}</span>
+        </div>
+      </div>
+      {j.status === "completed" && sr?.total && (
+        <p className="text-xs text-zinc-500">
+          候補 {sr.total.candidates} / 新着 {sr.total.saved} / スキップ {sr.total.skipped}
+          {sr.total.updated > 0 && ` / 更新 ${sr.total.updated}`}
+        </p>
+      )}
+      {j.status === "completed" && ps && (
+        <div className="grid grid-cols-3 gap-x-3 gap-y-0.5">
+          {[
+            ["TDnet", ps.tdnet],
+            ["EDINET", ps.edinet],
+            ["国内", ps.jp_news],
+            ["海外", ps.en_news],
+            ["公式", ps.official],
+          ].map(([label, s]) => s && (s as SourceStats).candidates > 0 ? (
+            <p key={label as string} className="text-xs text-zinc-400">
+              {label as string}: <span className="text-zinc-600 dark:text-zinc-300">{(s as SourceStats).saved}</span>/{(s as SourceStats).candidates}
+            </p>
+          ) : null)}
+        </div>
+      )}
+      {!sr && j.status === "completed" && (
+        <p className="text-xs text-zinc-500">
+          TDnet {j.tdnet_count} / EDINET {j.edinet_count} / 国内 {j.jp_news_count} / 海外 {j.en_news_count} 件
+        </p>
+      )}
+      {j.error_message && (
+        <p className="text-xs text-red-500 truncate">{j.error_message}</p>
+      )}
     </div>
   );
 }
