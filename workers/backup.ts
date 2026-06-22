@@ -87,6 +87,17 @@ async function main() {
       { onConflict: "source" }
     );
 
+    // Rotate: keep only the latest 8 backups
+    const KEEP = 8;
+    const { data: allFiles } = await supabase.storage
+      .from(BACKUP_BUCKET)
+      .list("", { limit: 100, sortBy: { column: "created_at", order: "asc" } });
+    const toDelete = (allFiles ?? []).slice(0, Math.max(0, (allFiles?.length ?? 0) - KEEP));
+    if (toDelete.length > 0) {
+      await supabase.storage.from(BACKUP_BUCKET).remove(toDelete.map((f) => f.name));
+      console.log("[backup] 古いバックアップを削除:", toDelete.map((f) => f.name).join(", "));
+    }
+
     await sendWeeklyBackupReport(true, `バックアップ完了\n${details}\nサイズ: ${Math.round(bytes.length / 1024)} KB`);
     console.log("[backup] 完了:", fileName);
   } catch (err) {

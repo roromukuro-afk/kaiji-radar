@@ -14,14 +14,31 @@ export async function GET() {
     supabase.from("operation_logs").select("*").order("created_at", { ascending: false }).limit(20),
   ]);
 
-  // Estimate storage usage
-  const { data: pdfCount } = await supabase
+  // Row counts for capacity monitoring
+  const [artCount, nhCount, jobCount] = await Promise.all([
+    supabase.from("articles").select("id", { count: "exact", head: true }),
+    supabase.from("notification_history").select("id", { count: "exact", head: true }),
+    supabase.from("fetch_jobs").select("id", { count: "exact", head: true }),
+  ]);
+
+  // PDF storage bytes
+  const { data: pdfDocs } = await supabase
     .from("pdf_documents")
     .select("file_size_bytes")
     .not("file_size_bytes", "is", null);
-
-  const totalPdfBytes = (pdfCount ?? []).reduce(
+  const totalPdfBytes = (pdfDocs ?? []).reduce(
     (sum: number, p: any) => sum + (p.file_size_bytes ?? 0),
+    0
+  );
+
+  // Backup storage bytes (sum from backup_logs)
+  const { data: backupLogs } = await supabase
+    .from("backup_logs")
+    .select("file_size_bytes")
+    .eq("status", "completed")
+    .not("file_size_bytes", "is", null);
+  const totalBackupBytes = (backupLogs ?? []).reduce(
+    (sum: number, b: any) => sum + (b.file_size_bytes ?? 0),
     0
   );
 
@@ -32,5 +49,12 @@ export async function GET() {
     last_hourly_run: settingsRes.data?.[0]?.value ?? null,
     storage_bytes: totalPdfBytes,
     operation_logs: logsRes.data ?? [],
+    capacity: {
+      articles: artCount.count ?? 0,
+      notification_history: nhCount.count ?? 0,
+      fetch_jobs: jobCount.count ?? 0,
+      pdf_bytes: totalPdfBytes,
+      backup_bytes: totalBackupBytes,
+    },
   });
 }

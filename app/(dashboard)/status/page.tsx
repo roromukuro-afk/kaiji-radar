@@ -65,6 +65,14 @@ type OperationLog = {
   details: Record<string, any> | null;
 };
 
+type Capacity = {
+  articles: number;
+  notification_history: number;
+  fetch_jobs: number;
+  pdf_bytes: number;
+  backup_bytes: number;
+};
+
 const SOURCE_LABELS: Record<string, string> = {
   tdnet_yanoshi: "TDnet (やのしん)",
   tdnet_direct: "TDnet (直接)",
@@ -92,6 +100,7 @@ export default function StatusPage() {
     last_hourly_run: string | null;
     storage_bytes: number;
     operation_logs: OperationLog[];
+    capacity: Capacity;
   } | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -125,16 +134,42 @@ export default function StatusPage() {
         </div>
       </div>
 
-      {/* Storage */}
-      <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 p-4">
-        <h2 className="font-semibold text-sm mb-1">PDF ストレージ</h2>
-        <p className="text-sm text-zinc-500">{fmtBytes(data.storage_bytes)} / 1 GB (Free)</p>
-        <div className="mt-2 h-2 rounded-full bg-zinc-100 dark:bg-zinc-800">
-          <div
-            className="h-2 rounded-full bg-blue-500"
-            style={{ width: `${Math.min(100, (data.storage_bytes / (1024 * 1024 * 1024)) * 100)}%` }}
-          />
-        </div>
+      {/* Capacity */}
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">
+        <h2 className="font-semibold text-sm">容量・使用量</h2>
+        {/* Storage bar */}
+        {(() => {
+          const cap = data.capacity ?? { articles: 0, notification_history: 0, fetch_jobs: 0, pdf_bytes: 0, backup_bytes: 0 };
+          const totalStorage = cap.pdf_bytes + cap.backup_bytes;
+          const storagePct = Math.min(100, (totalStorage / (1024 * 1024 * 1024)) * 100);
+          const warnStorage = storagePct > 70;
+          return (
+            <>
+              <div>
+                <div className="flex justify-between text-xs text-zinc-500 mb-1">
+                  <span>Supabase Storage</span>
+                  <span className={warnStorage ? "text-red-500 font-medium" : ""}>{fmtBytes(totalStorage)} / 1 GB</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800">
+                  <div className={`h-1.5 rounded-full ${warnStorage ? "bg-red-500" : "bg-blue-500"}`} style={{ width: `${storagePct}%` }} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                {[
+                  ["記事数", cap.articles.toLocaleString(), cap.articles > 50000],
+                  ["通知履歴", cap.notification_history.toLocaleString(), cap.notification_history > 100000],
+                  ["PDFストレージ", fmtBytes(cap.pdf_bytes), cap.pdf_bytes > 800 * 1024 * 1024],
+                  ["バックアップ", fmtBytes(cap.backup_bytes), false],
+                ].map(([label, val, warn]) => (
+                  <div key={label as string} className="flex justify-between text-xs">
+                    <span className="text-zinc-500">{label as string}</span>
+                    <span className={warn ? "text-yellow-600 dark:text-yellow-400 font-medium" : "text-zinc-700 dark:text-zinc-300"}>{val as string}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       {/* Health checks */}

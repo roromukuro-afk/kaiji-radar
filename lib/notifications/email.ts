@@ -9,7 +9,9 @@
 
 import { Resend } from "resend";
 
-const FROM = "開示レーダー <noreply@kaiji-radar.app>";
+// RESEND_FROM_EMAIL に独自ドメインを設定しない場合は Resend のデフォルト送信元を使用
+// 独自ドメイン使用時は Resend ダッシュボードでドメイン認証が必要
+const FROM = process.env.RESEND_FROM_EMAIL ?? "開示レーダー <onboarding@resend.dev>";
 const TO = process.env.BACKUP_EMAIL!;
 
 function getResend(): Resend | null {
