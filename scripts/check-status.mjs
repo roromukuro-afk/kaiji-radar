@@ -70,18 +70,23 @@ for (const l of logs ?? []) {
   }));
 }
 
-// notification_history recent
+// notification_history
+const { data: allNotifStatus } = await sb.from("notification_history").select("status");
+const notifCounts = {};
+for (const r of allNotifStatus ?? []) notifCounts[r.status] = (notifCounts[r.status] ?? 0) + 1;
+
 const { data: notifs } = await sb
   .from("notification_history")
   .select("*")
-  .order("created_at", { ascending: false })
-  .limit(10);
+  .order("sent_at", { ascending: false })
+  .limit(5);
 
-console.log("\n=== notification_history (最新10件) ===");
+console.log("\n=== notification_history ===");
+console.log("  件数:", notifCounts);
 for (const n of notifs ?? []) {
   console.log(JSON.stringify({
     status: n.status,
-    created: n.created_at?.slice(0, 19),
+    sent_at: n.sent_at?.slice(0, 19),
     article_id: n.article_id?.slice(0, 8),
     error: n.error_message?.slice(0, 60),
   }));

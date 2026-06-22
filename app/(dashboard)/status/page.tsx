@@ -57,6 +57,14 @@ type BackupLog = {
   file_size_bytes: number | null;
 };
 
+type OperationLog = {
+  id: string;
+  action: string;
+  result: string;
+  created_at: string;
+  details: Record<string, any> | null;
+};
+
 const SOURCE_LABELS: Record<string, string> = {
   tdnet_yanoshi: "TDnet (やのしん)",
   tdnet_direct: "TDnet (直接)",
@@ -83,6 +91,7 @@ export default function StatusPage() {
     recent_backups: BackupLog[];
     last_hourly_run: string | null;
     storage_bytes: number;
+    operation_logs: OperationLog[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -167,6 +176,33 @@ export default function StatusPage() {
               </div>
             </div>
             <p className="text-xs text-zinc-400 mt-1">{formatRelative(b.started_at)}</p>
+          </div>
+        ))}
+      </section>
+
+      {/* Operation logs */}
+      <section className="space-y-2">
+        <h2 className="font-semibold text-sm text-zinc-500">操作履歴</h2>
+        {(data.operation_logs ?? []).length === 0 ? (
+          <p className="text-sm text-zinc-400">操作履歴なし</p>
+        ) : (data.operation_logs ?? []).map((l) => (
+          <div key={l.id} className="rounded-xl border border-zinc-100 dark:border-zinc-800 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-zinc-700 dark:text-zinc-300 font-medium">
+                {l.action === "manual_fetch" ? "手動フェッチ" : l.action}
+              </span>
+              <div className="flex items-center gap-2">
+                <span className={`text-xs px-1.5 py-0.5 rounded ${
+                  l.result === "success" ? "bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200" : "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200"
+                }`}>
+                  {l.result === "success" ? "成功" : l.result}
+                </span>
+                <span className="text-xs text-zinc-400">{formatRelative(l.created_at)}</span>
+              </div>
+            </div>
+            {l.details?.triggered_by && (
+              <p className="text-xs text-zinc-400 mt-0.5">{l.details.triggered_by}</p>
+            )}
           </div>
         ))}
       </section>

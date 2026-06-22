@@ -41,13 +41,19 @@ async function main() {
     const backup: Record<string, any[]> = {};
 
     for (const table of TABLES) {
-      const { data, error } = await supabase.from(table).select("*");
-      if (error) {
-        console.error(`[backup] ${table} 取得失敗:`, error);
-        backup[table] = [];
-      } else {
-        backup[table] = data ?? [];
+      // Paginate to fetch all rows (PostgREST default limit = 1000)
+      const all: any[] = [];
+      const PAGE = 1000;
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase.from(table).select("*").range(from, from + PAGE - 1);
+        if (error) { console.error(`[backup] ${table} 取得失敗:`, error); break; }
+        if (!data || data.length === 0) break;
+        all.push(...data);
+        if (data.length < PAGE) break;
+        from += PAGE;
       }
+      backup[table] = all;
     }
 
     const dateStr = startedAt.toISOString().split("T")[0];
