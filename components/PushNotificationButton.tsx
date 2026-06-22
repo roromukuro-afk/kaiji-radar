@@ -10,27 +10,43 @@ export function PushNotificationButton() {
       setState("unsupported");
       return;
     }
-    Notification.requestPermission().then((perm) => {
-      if (perm === "denied") { setState("denied"); return; }
-    });
     navigator.serviceWorker.ready.then(async (reg) => {
+      const perm = await Notification.requestPermission();
+      if (perm === "denied") { setState("denied"); return; }
+
       const sub = await reg.pushManager.getSubscription();
-      setState(sub ? "subscribed" : "unsubscribed");
+      if (sub) {
+        setState("subscribed");
+        // Ensure subscription is synced to server on every load
+        fetch("/api/push", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(sub.toJSON()),
+        }).catch(() => {/* silent: retry next load */});
+      } else {
+        setState("unsubscribed");
+      }
     });
   }, []);
 
   async function subscribe() {
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!),
-    });
-    await fetch("/api/push", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sub.toJSON()),
-    });
-    setState("subscribed");
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!),
+      });
+      const res = await fetch("/api/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub.toJSON()),
+      });
+      if (!res.ok) throw new Error(`server ${res.status}`);
+      setState("subscribed");
+    } catch (err) {
+      console.error("[Push] subscribe failed:", err);
+      alert(`通知の登録に失敗しました: ${err}`);
+    }
   }
 
   async function unsubscribe() {
