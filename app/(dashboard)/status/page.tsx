@@ -172,20 +172,33 @@ export default function StatusPage() {
 }
 
 function HealthRow({ check: h }: { check: HealthCheck }) {
-  const ok = h.consecutive_failures === 0 && h.last_success_at != null;
-  const warn = h.consecutive_failures > 0 && h.consecutive_failures < 3;
-  const err = h.consecutive_failures >= 3;
+  const keyMissing = h.status === "key_missing";
+  const ok = !keyMissing && h.consecutive_failures === 0 && h.last_success_at != null;
+  const warn = !keyMissing && h.consecutive_failures > 0 && h.consecutive_failures < 3;
+  const err = !keyMissing && h.consecutive_failures >= 3;
 
   return (
     <div className="flex items-center gap-3 rounded-xl border border-zinc-100 dark:border-zinc-800 p-3">
-      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${ok ? "bg-green-500" : warn ? "bg-yellow-500" : err ? "bg-red-500" : "bg-zinc-300"}`} />
+      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+        keyMissing ? "bg-zinc-300 dark:bg-zinc-600" :
+        ok ? "bg-green-500" : warn ? "bg-yellow-500" : err ? "bg-red-500" : "bg-zinc-300"
+      }`} />
       <div className="flex-1 min-w-0">
         <p className="text-sm">{SOURCE_LABELS[h.source] ?? h.source}</p>
         <p className="text-xs text-zinc-400">
-          {h.last_success_at ? `最終成功: ${formatRelative(h.last_success_at)}` : "未確認"}
-          {h.consecutive_failures > 0 && ` · ${h.consecutive_failures}回連続失敗`}
+          {keyMissing
+            ? "APIキー未設定 — 取得スキップ中"
+            : h.last_success_at
+              ? `最終成功: ${formatRelative(h.last_success_at)}`
+              : "未確認"}
+          {!keyMissing && h.consecutive_failures > 0 && ` · ${h.consecutive_failures}回連続失敗`}
         </p>
       </div>
+      {keyMissing && (
+        <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 flex-shrink-0">
+          キー未設定
+        </span>
+      )}
     </div>
   );
 }

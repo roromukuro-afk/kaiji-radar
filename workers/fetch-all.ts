@@ -197,6 +197,13 @@ async function main() {
   // 2. EDINET
   // ============================
   console.log("[fetch-all] EDINET 取得開始");
+  if (!process.env.EDINET_API_KEY) {
+    console.log("[EDINET] APIキー未設定 → スキップ");
+    await supabase.from("health_checks").upsert(
+      { source: "edinet", status: "key_missing", checked_at: new Date().toISOString() },
+      { onConflict: "source" }
+    );
+  } else {
   await updateHealth("edinet", "checking");
   try {
     const secCodes = normalizedStocks.map((s) => s.sec_code ?? stockCodeToSecCode(s.code));
@@ -243,6 +250,7 @@ async function main() {
     results.errors.push(`EDINET: ${err}`);
     await handleSourceError("edinet", String(err));
   }
+  } // end EDINET key check
 
   // ============================
   // 3. 国内ニュース
@@ -630,7 +638,7 @@ async function processPdf(
   }
 }
 
-async function updateHealth(source: string, status: "ok" | "failed" | "checking" | "degraded"): Promise<void> {
+async function updateHealth(source: string, status: "ok" | "failed" | "checking" | "degraded" | "key_missing"): Promise<void> {
   const now = new Date().toISOString();
   const updateData: Record<string, any> = {
     source,
