@@ -9,6 +9,7 @@ type HealthCheck = {
   last_failure_at: string | null;
   consecutive_failures: number;
   status: string;
+  error_message: string | null;
 };
 
 type SourceStats = {
@@ -302,7 +303,7 @@ function FetchJobCard({ job: j }: { job: FetchJob }) {
 }
 
 function HealthRow({ check: h }: { check: HealthCheck }) {
-  const keyMissing = h.status === "key_missing";
+  const keyMissing = h.status === "key_missing" || h.error_message === "APIキー未設定";
   const ok = !keyMissing && h.consecutive_failures === 0 && h.last_success_at != null;
   const warn = !keyMissing && h.consecutive_failures > 0 && h.consecutive_failures < 3;
   const err = !keyMissing && h.consecutive_failures >= 3;

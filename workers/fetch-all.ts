@@ -215,8 +215,15 @@ async function main() {
   console.log("[fetch-all] EDINET 取得開始");
   if (!process.env.EDINET_API_KEY) {
     console.log("[EDINET] APIキー未設定 → スキップ");
+    // status: "key_missing" は DB の CHECK 制約外のため "failed" + error_message で代替
     await supabase.from("health_checks").upsert(
-      { source: "edinet", status: "key_missing", checked_at: new Date().toISOString() },
+      {
+        source: "edinet",
+        status: "failed",
+        error_message: "APIキー未設定",
+        consecutive_failures: 0,
+        checked_at: new Date().toISOString(),
+      },
       { onConflict: "source" }
     );
   } else {
