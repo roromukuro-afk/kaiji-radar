@@ -70,11 +70,11 @@ export async function fetchAndStorePdf(
     console.error(`[PDF] Storage 保存失敗 ${docId}:`, uploadError);
   }
 
-  // Text extraction
+  // Text extraction (pdf-parse only; OCR removed — crashes in CI environments)
   let extractedText: string | null = null;
-  let ocrText: string | null = null;
+  const ocrText: string | null = null;
   let extractionMethod: "pdfparse" | "ocr" | "failed" = "failed";
-  let ocrQuality: "good" | "poor" | null = null;
+  const ocrQuality: "good" | "poor" | null = null;
 
   try {
     const pdfParse = require("pdf-parse");
@@ -83,22 +83,10 @@ export async function fetchAndStorePdf(
     if (text && text.length > 50) {
       extractedText = text;
       extractionMethod = "pdfparse";
-    } else {
-      throw new Error("Extracted text too short");
     }
-  } catch {
-    // OCR fallback (only for smaller PDFs to control cost/time)
-    if (fileSizeBytes < 10 * 1024 * 1024) {
-      try {
-        const result = await runOcr(pdfBytes);
-        ocrText = result.text;
-        ocrQuality = result.quality;
-        extractionMethod = "ocr";
-      } catch (ocrErr) {
-        console.error("[PDF] OCR 失敗:", ocrErr);
-        extractionMethod = "failed";
-      }
-    }
+  } catch (parseErr) {
+    console.error("[PDF] テキスト抽出失敗:", parseErr);
+    extractionMethod = "failed";
   }
 
   return {
@@ -109,27 +97,6 @@ export async function fetchAndStorePdf(
     ocrText,
     extractionMethod,
     ocrQuality,
-  };
-}
-
-async function runOcr(
-  pdfBytes: Buffer
-): Promise<{ text: string; quality: "good" | "poor" }> {
-  const { createWorker } = require("tesseract.js");
-  const worker = await createWorker(["jpn", "eng"]);
-  await worker.setParameters({ tessedit_pageseg_mode: "1" });
-
-  // For PDF OCR, convert first page to image-like buffer
-  // Tesseract can process PDFs directly in some configurations
-  const result = await worker.recognize(pdfBytes);
-  await worker.terminate();
-
-  const text = result.data.text ?? "";
-  const confidence = result.data.confidence ?? 0;
-
-  return {
-    text: text.trim(),
-    quality: confidence >= 60 ? "good" : "poor",
   };
 }
 
