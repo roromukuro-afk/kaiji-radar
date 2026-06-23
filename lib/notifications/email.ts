@@ -14,12 +14,27 @@ import { Resend } from "resend";
 const FROM = process.env.RESEND_FROM_EMAIL ?? "開示レーダー <onboarding@resend.dev>";
 const TO = process.env.BACKUP_EMAIL!;
 
+type EmailKind = "info" | "error" | "recovery";
+
+const PREFIX: Record<EmailKind, string> = {
+  info:     "[開示レーダー]",
+  error:    "[開示レーダー障害]",
+  recovery: "[開示レーダー復旧]",
+};
+
+const LOG_LABEL: Record<EmailKind, string> = {
+  info:     "通知メール送信",
+  error:    "障害メール送信",
+  recovery: "復旧メール送信",
+};
+
 function getResend(): Resend | null {
   if (!process.env.RESEND_API_KEY) return null;
   return new Resend(process.env.RESEND_API_KEY);
 }
 
-export async function sendErrorEmail(
+async function sendEmail(
+  kind: EmailKind,
   subject: string,
   body: string
 ): Promise<void> {
@@ -32,21 +47,29 @@ export async function sendErrorEmail(
     await resend.emails.send({
       from: FROM,
       to: TO,
-      subject: `[開示レーダー障害] ${subject}`,
+      subject: `${PREFIX[kind]} ${subject}`,
       text: body,
     });
-    console.log("[Email] 障害メール送信:", subject);
+    console.log(`[Email] ${LOG_LABEL[kind]}:`, subject);
   } catch (err) {
     console.error("[Email] 送信失敗:", err);
   }
+}
+
+export async function sendErrorEmail(
+  subject: string,
+  body: string
+): Promise<void> {
+  await sendEmail("error", subject, body);
 }
 
 export async function sendRecoveryEmail(
   source: string,
   recoveredAt: Date
 ): Promise<void> {
-  await sendErrorEmail(
-    `${source} 復旧通知`,
+  await sendEmail(
+    "recovery",
+    `${source} 復旧`,
     `${source} が復旧しました。\n復旧時刻: ${recoveredAt.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}`
   );
 }
@@ -54,7 +77,8 @@ export async function sendRecoveryEmail(
 export async function sendPendingArticlesEmail(
   pendingCount: number
 ): Promise<void> {
-  await sendErrorEmail(
+  await sendEmail(
+    "error",
     `未送信記事あり: ${pendingCount}件`,
     `プッシュ通知が届かなかった記事が ${pendingCount} 件あります。\nアプリを開いて未読一覧をご確認ください。\n${process.env.NEXT_PUBLIC_APP_URL}`
   );
@@ -64,6 +88,9 @@ export async function sendWeeklyBackupReport(
   success: boolean,
   details: string
 ): Promise<void> {
-  const subject = success ? "週次バックアップ完了" : "週次バックアップ失敗";
-  await sendErrorEmail(subject, details);
+  await sendEmail(
+    success ? "info" : "error",
+    success ? "週次バックアップ完了" : "週次バックアップ失敗",
+    details
+  );
 }
