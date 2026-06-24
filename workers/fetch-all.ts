@@ -123,6 +123,57 @@ async function main() {
       : s.stock_profiles,
   }));
 
+  // Load active keyword exclusion rules (graceful fallback if table not yet migrated)
+  type ExclusionRule = {
+    stock_id: string;
+    keyword: string | null;
+    rule_type: string;
+    domain: string | null;
+    confirmation_count: number;
+  };
+  let exclusionRules: ExclusionRule[] = [];
+  try {
+    const { data: ruleData } = await supabase
+      .from("stock_keyword_rules")
+      .select("stock_id, keyword, rule_type, domain, confirmation_count")
+      .eq("is_active", true);
+    if (ruleData) exclusionRules = ruleData;
+    if (exclusionRules.length > 0) {
+      console.log(`[fetch-all] 除外ルール: ${exclusionRules.length} 件ロード`);
+    }
+  } catch {
+    // Table may not exist yet — proceed without rules
+  }
+
+  function applyExclusionRules(
+    title: string,
+    summary: string | null | undefined,
+    url: string,
+    stockId: string
+  ): { exclusion_candidate: boolean; exclusion_reason: string | null } {
+    const stockRules = exclusionRules.filter((r) => r.stock_id === stockId);
+    const text = (title + " " + (summary ?? "")).toLowerCase();
+
+    for (const rule of stockRules) {
+      if (rule.rule_type === "domain_exclude" && rule.domain) {
+        if (url.includes(rule.domain)) {
+          return {
+            exclusion_candidate: true,
+            exclusion_reason: `同名別会社ドメイン除外: ${rule.domain}`,
+          };
+        }
+      } else if (rule.rule_type === "exclude_candidate" && rule.keyword) {
+        if (text.includes(rule.keyword.toLowerCase())) {
+          return {
+            exclusion_candidate: true,
+            exclusion_reason: `除外キーワード一致: ${rule.keyword}`,
+          };
+        }
+      }
+    }
+    return { exclusion_candidate: false, exclusion_reason: null };
+  }
+
   const startTime = Date.now();
 
   type SourceStats = { candidates: number; saved: number; skipped: number; updated: number; errors: number };
@@ -329,6 +380,9 @@ async function main() {
           continue;
         }
 
+        // Check user-defined exclusion rules (applied after relevance; certain/uncertain articles)
+        const excl = applyExclusionRules(item.title, item.summary, item.url, stock.id);
+
         const r = await saveArticle({
           source_type: item.sourceType,
           source_url: item.url,
@@ -340,6 +394,8 @@ async function main() {
           stock,
           relevance,
           relevance_reason: relevanceReason,
+          exclusion_candidate: excl.exclusion_candidate || undefined,
+          exclusion_reason: excl.exclusion_reason,
         });
 
         if (r.outcome === "new") { src.jp_news.saved++; await notifyArticle(r.article, stock);
@@ -403,6 +459,8 @@ async function main() {
 
         try { titleJa = await translateTitleJa(item.title); } catch { titleJa = null; }
 
+        const enExcl = applyExclusionRules(item.title, item.summary, item.url, stock.id);
+
         const r = await saveArticle({
           source_type: "en_news",
           source_url: item.url,
@@ -416,6 +474,8 @@ async function main() {
           stock,
           relevance,
           relevance_reason: relevanceReason,
+          exclusion_candidate: enExcl.exclusion_candidate || undefined,
+          exclusion_reason: enExcl.exclusion_reason,
         });
 
         if (r.outcome === "new") { src.en_news.saved++; await notifyArticle(r.article, stock);
@@ -520,6 +580,8 @@ async function saveArticle(params: {
   stock: StockRecord;
   relevance: "certain" | "uncertain" | "irrelevant";
   relevance_reason?: string;
+  exclusion_candidate?: boolean;
+  exclusion_reason?: string | null;
 }): Promise<SaveResult> {
   // Check for existing article with same doc ID or URL
   const existingInfo = await findExistingArticle(
@@ -544,28 +606,37 @@ async function saveArticle(params: {
     return { outcome: "duplicate" };
   }
 
+  // Build insert payload; new columns are included only if available (graceful degradation)
+  const insertPayload: Record<string, unknown> = {
+    source_type: params.source_type,
+    source_url: params.source_url,
+    tdnet_doc_id: params.tdnet_doc_id,
+    edinet_doc_id: params.edinet_doc_id,
+    edinet_submitter_code: params.edinet_submitter_code,
+    edinet_doc_type_code: params.edinet_doc_type_code,
+    title: params.title,
+    title_ja: params.title_ja ?? null,
+    publisher: params.publisher,
+    published_at: params.published_at,
+    summary: params.summary,
+    is_pdf: params.is_pdf ?? false,
+    is_paywalled: params.is_paywalled ?? false,
+    is_overseas: params.is_overseas ?? false,
+    doc_type: params.doc_type,
+    relevance: params.relevance,
+    relevance_reason: params.relevance_reason,
+  };
+  if (params.exclusion_candidate !== undefined) {
+    insertPayload.exclusion_candidate = params.exclusion_candidate;
+  }
+  if (params.exclusion_reason !== undefined) {
+    insertPayload.exclusion_reason = params.exclusion_reason;
+  }
+
   const { data: article, error } = await supabase
     .from("articles")
-    .insert({
-      source_type: params.source_type,
-      source_url: params.source_url,
-      tdnet_doc_id: params.tdnet_doc_id,
-      edinet_doc_id: params.edinet_doc_id,
-      edinet_submitter_code: params.edinet_submitter_code,
-      edinet_doc_type_code: params.edinet_doc_type_code,
-      title: params.title,
-      title_ja: params.title_ja ?? null,
-      publisher: params.publisher,
-      published_at: params.published_at,
-      summary: params.summary,
-      is_pdf: params.is_pdf ?? false,
-      is_paywalled: params.is_paywalled ?? false,
-      is_overseas: params.is_overseas ?? false,
-      doc_type: params.doc_type,
-      relevance: params.relevance,
-      relevance_reason: params.relevance_reason,
-    })
-    .select("id, source_type, title, title_ja, publisher, published_at, summary, relevance, is_overseas, source_url")
+    .insert(insertPayload)
+    .select("id, source_type, title, title_ja, publisher, published_at, summary, relevance, is_overseas, source_url, exclusion_candidate")
     .single();
 
   if (error || !article) {
@@ -621,6 +692,16 @@ async function notifyArticle(
   article: { id: string; [key: string]: any },
   stock: StockRecord
 ): Promise<void> {
+  // 通知スキップ: 無関係確定 or 除外候補
+  if (
+    article.relevance === "irrelevant" ||
+    article.user_relevance === "irrelevant" ||
+    article.exclusion_candidate === true
+  ) {
+    console.log(`[fetch-all] 通知スキップ (除外): ${article.id} title="${article.title?.slice(0, 40)}"`);
+    return;
+  }
+
   try {
     const payload = buildPushPayload({
       id: article.id,

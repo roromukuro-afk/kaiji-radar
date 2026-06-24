@@ -6,10 +6,11 @@ import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 
 const NAV = [
-  { href: "/", label: "新着", icon: "📋" },
-  { href: "/manage", label: "銘柄", icon: "🏢" },
-  { href: "/status", label: "状態", icon: "📊" },
-  { href: "/history", label: "履歴", icon: "📝" },
+  { href: "/", label: "新着" },
+  { href: "/stocks", label: "銘柄" },
+  { href: "/manage", label: "管理" },
+  { href: "/status", label: "状態" },
+  { href: "/history", label: "履歴" },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -44,22 +45,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       {/* Bottom nav (mobile) */}
       <nav className="sticky bottom-0 z-40 bg-white dark:bg-zinc-950 border-t border-zinc-200 dark:border-zinc-800 safe-bottom">
-        <div className="max-w-3xl mx-auto grid grid-cols-4">
+        <div className="max-w-3xl mx-auto grid grid-cols-5">
           {NAV.map((item) => {
             const active = item.href === "/"
               ? pathname === "/"
-              : pathname.startsWith(item.href);
+              : pathname === item.href || pathname.startsWith(item.href + "/");
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex flex-col items-center py-2 text-xs gap-0.5 transition-colors ${
+                className={`flex flex-col items-center py-2.5 text-xs gap-0.5 transition-colors min-h-[44px] justify-center ${
                   active
                     ? "text-zinc-900 dark:text-zinc-100"
                     : "text-zinc-400 dark:text-zinc-500"
                 }`}
               >
-                <span className="text-lg leading-none">{item.icon}</span>
                 <span>{item.label}</span>
               </Link>
             );

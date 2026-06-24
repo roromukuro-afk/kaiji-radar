@@ -2,6 +2,9 @@ import { createClient } from "@/lib/supabase/server";
 import { notFound, redirect } from "next/navigation";
 import { formatJST, sourceTypeLabel, sourceTypeColor } from "@/lib/utils";
 import Link from "next/link";
+import { FeedbackPanel } from "./FeedbackPanel";
+
+type Stock = { id: string; code: string; name: string };
 
 export default async function ArticlePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -44,7 +47,10 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
     }
   }
 
-  const stocks = article.article_stocks?.map((as: any) => as.stocks).filter(Boolean) ?? [];
+  const stocks: Stock[] =
+    (article.article_stocks as { stock_id: string; stocks: Stock | null }[] | null)
+      ?.map((as) => as.stocks)
+      .filter((s): s is Stock => s !== null) ?? [];
 
   return (
     <div className="min-h-screen bg-white dark:bg-zinc-950">
@@ -65,7 +71,7 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
           <span className={`text-xs px-2 py-1 rounded-lg font-medium ${sourceTypeColor(article.source_type)}`}>
             {sourceTypeLabel(article.source_type)}
           </span>
-          {stocks.map((s: any) => (
+          {stocks.map((s) => (
             <Link
               key={s.id}
               href={`/stocks/${s.code}`}
@@ -75,10 +81,13 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
             </Link>
           ))}
           {article.is_update && (
-            <span className="text-xs px-2 py-1 rounded-lg bg-amber-100 text-amber-800">更新</span>
+            <span className="text-xs px-2 py-1 rounded-lg bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200">更新</span>
           )}
           {article.relevance === "uncertain" && (
             <span className="text-xs px-2 py-1 rounded-lg bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200">関連不確実</span>
+          )}
+          {(article.exclusion_candidate === true) && (
+            <span className="text-xs px-2 py-1 rounded-lg bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300">除外候補</span>
           )}
           {article.is_paywalled && (
             <span className="text-xs px-2 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-zinc-500">有料記事</span>
@@ -109,6 +118,21 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
           <div className="rounded-xl bg-zinc-50 dark:bg-zinc-900 p-4">
             <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400 mb-2">AI要約</p>
             <p className="text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">{article.summary}</p>
+          </div>
+        )}
+
+        {/* Feedback panel — one per linked stock */}
+        {stocks.length > 0 && (
+          <div className="space-y-3">
+            {stocks.map((s) => (
+              <FeedbackPanel
+                key={s.id}
+                articleId={id}
+                stock={s}
+                systemRelevance={article.relevance as string | null}
+                systemExclusion={article.exclusion_candidate === true}
+              />
+            ))}
           </div>
         )}
 
