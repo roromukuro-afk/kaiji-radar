@@ -40,6 +40,7 @@ import {
   buildPushPayload,
 } from "../lib/notifications/web-push.js";
 import { sendErrorEmail, sendRecoveryEmail, sendPendingArticlesEmail } from "../lib/notifications/email.js";
+import { GLOBAL_PROTECT_KEYWORDS, isSafeSource, matchesProtection } from "../lib/noise/protection.js";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -127,8 +128,7 @@ async function main() {
   // Load exclusion/noise rules
   // ============================
 
-  // TDnet / EDINET / official は絶対に除外しない (安全ソース)
-  const SAFE_SOURCE_TYPES = new Set(["tdnet", "edinet", "official"]);
+  // 安全ソース判定・保護キーワードは lib/noise/protection.ts に集約
 
   function extractDomain(url: string): string {
     try { return new URL(url).hostname; } catch { return url; }
@@ -170,9 +170,17 @@ async function main() {
     if (nrData) noiseRules = nrData;
   } catch { /* Table may not exist yet */ }
 
+  // DB の strengthen ルール (= 保護キーワード) を抽出
+  const dbProtectKeywords = noiseRules
+    .filter((r) => r.rule_type === "strengthen" && r.match_type === "keyword")
+    .map((r) => r.match_value);
+
   const totalRules = exclusionRules.length + noiseRules.length;
   if (totalRules > 0) {
-    console.log(`[fetch-all] ノイズルール: legacy=${exclusionRules.length} noise_rules=${noiseRules.length} 件ロード`);
+    console.log(
+      `[fetch-all] ノイズルール: legacy=${exclusionRules.length} noise_rules=${noiseRules.length} 件ロード ` +
+      `(保護KW: 共通${GLOBAL_PROTECT_KEYWORDS.length} + DB${dbProtectKeywords.length})`
+    );
   }
 
   function applyExclusionRules(
@@ -183,15 +191,21 @@ async function main() {
     publisher: string | null | undefined,
     stockId: string
   ): { exclusion_candidate: boolean; exclusion_reason: string | null } {
-    // 安全ソースは絶対に除外しない
-    if (SAFE_SOURCE_TYPES.has(sourceType)) {
+    // 1. 安全ソース (TDnet/EDINET/公式) は絶対に除外しない
+    if (isSafeSource(sourceType)) {
+      return { exclusion_candidate: false, exclusion_reason: null };
+    }
+
+    // 2. 保護キーワードがあれば、ノイズ一致しても除外しない
+    const protectedBy = matchesProtection(title, summary, dbProtectKeywords);
+    if (protectedBy) {
       return { exclusion_candidate: false, exclusion_reason: null };
     }
 
     const text = (title + " " + (summary ?? "")).toLowerCase();
     const domain = extractDomain(url);
 
-    // Phase 3.2 noise_rules を先にチェック
+    // 3. Phase 3.2 noise_rules を先にチェック (strengthen は除外ルールではないのでスキップ)
     const stockNoiseRules = noiseRules.filter(
       (r) => r.scope === "all_stocks" || r.stock_id === stockId
     );
@@ -212,7 +226,7 @@ async function main() {
       }
     }
 
-    // Legacy stock_keyword_rules フォールバック
+    // 4. Legacy stock_keyword_rules フォールバック
     const stockRules = exclusionRules.filter((r) => r.stock_id === stockId);
     for (const rule of stockRules) {
       if (rule.rule_type === "domain_exclude" && rule.domain) {

@@ -17,6 +17,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { isSafeSource, matchesProtection } from "../lib/noise/protection.js";
 
 // Load .env.local
 function loadEnv() {
@@ -91,8 +92,6 @@ function extractDomain(url: string): string {
   try { return new URL(url).hostname; } catch { return url; }
 }
 
-// Safe source types — never excluded regardless of rules
-const SAFE_SOURCE_TYPES = new Set(["tdnet", "edinet", "official"]);
 
 function matchesRule(
   matchType: string,
@@ -291,16 +290,27 @@ async function reclassifyForStock(
     user_relevance: string | null;
   } }[]).map((r) => r.articles);
 
+  // DB の strengthen ルール (= 追加の保護キーワード)
+  const { data: strengthenRules } = await supabase
+    .from("noise_rules")
+    .select("match_value")
+    .eq("is_active", true)
+    .eq("rule_type", "strengthen")
+    .eq("match_type", "keyword");
+  const dbProtectKeywords = (strengthenRules ?? []).map((r: { match_value: string }) => r.match_value);
+
   let matched = 0;
   let skipped = 0;
 
   for (const article of articles) {
     // Never touch safe sources
-    if (SAFE_SOURCE_TYPES.has(article.source_type)) { skipped++; continue; }
+    if (isSafeSource(article.source_type)) { skipped++; continue; }
     // Never override user-set 'relevant'
     if (article.user_relevance === "relevant") { skipped++; continue; }
     // Already excluded — skip (avoid double-counting)
     if (article.exclusion_candidate) { skipped++; continue; }
+    // 保護キーワードがあればノイズ一致しても除外しない
+    if (matchesProtection(article.title, article.summary, dbProtectKeywords)) { skipped++; continue; }
 
     let matchedRule: { match_type: string; match_value: string } | null = null;
     for (const rule of newRules) {

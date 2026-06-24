@@ -13,6 +13,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { isSafeSource, matchesProtection } from "../lib/noise/protection.js";
 
 function loadEnv() {
   for (const envFile of ["scripts/.env.local", ".env.local"]) {
@@ -32,8 +33,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
-
-const SAFE_SOURCE_TYPES = new Set(["tdnet", "edinet", "official"]);
 
 function extractDomain(url: string): string {
   try { return new URL(url).hostname; } catch { return url; }
@@ -112,7 +111,12 @@ async function main() {
 
   const { data: allRules } = await rulesQuery;
   const noiseRules: NoiseRule[] = allRules ?? [];
-  console.log(`[reclassify] ノイズルール: ${noiseRules.length} 件ロード`);
+
+  // DB の strengthen ルール (= 追加の保護キーワード)
+  const dbProtectKeywords = noiseRules
+    .filter((r) => r.rule_type === "strengthen" && r.match_type === "keyword")
+    .map((r) => r.match_value);
+  console.log(`[reclassify] ノイズルール: ${noiseRules.length} 件ロード (保護KW DB${dbProtectKeywords.length})`);
 
   // Load stocks
   const stocksQuery = supabase.from("stocks").select("id, code, name").eq("status", "active");
@@ -149,7 +153,7 @@ async function main() {
       totalScanned++;
 
       // Never touch safe sources (TDnet/EDINET/official)
-      if (SAFE_SOURCE_TYPES.has(article.source_type)) { totalSkipped++; continue; }
+      if (isSafeSource(article.source_type)) { totalSkipped++; continue; }
 
       if (restore) {
         // Restore mode: revert exclusion_candidate if it was set by a rule
@@ -176,6 +180,8 @@ async function main() {
       if (article.user_relevance === "relevant") { totalSkipped++; continue; }
       // Skip if already excluded (avoid overwriting user judgments)
       if (article.exclusion_candidate && article.user_relevance === "irrelevant") { totalSkipped++; continue; }
+      // 保護キーワードがあればノイズ一致しても除外しない
+      if (matchesProtection(article.title, article.summary, dbProtectKeywords)) { totalSkipped++; continue; }
 
       let matchedRule: NoiseRule | null = null;
       let matchReason = "";

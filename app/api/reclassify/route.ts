@@ -1,8 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createClient as createServiceClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-
-const SAFE_SOURCE_TYPES = new Set(["tdnet", "edinet", "official"]);
+import { isSafeSource, matchesProtection } from "@/lib/noise/protection";
 
 function extractDomain(url: string): string {
   try { return new URL(url).hostname; } catch { return url; }
@@ -57,6 +56,11 @@ export async function POST(request: Request) {
   const { data: noiseRules } = await rulesQuery;
   const rules = noiseRules ?? [];
 
+  // DB の strengthen ルール (= 追加の保護キーワード)
+  const dbProtectKeywords = rules
+    .filter((r) => r.rule_type === "strengthen" && r.match_type === "keyword")
+    .map((r) => r.match_value);
+
   // Determine which stocks to scan
   let stockIds: string[] = [];
   if (stock_id) {
@@ -99,7 +103,7 @@ export async function POST(request: Request) {
 
     for (const article of articles) {
       totalScanned++;
-      if (SAFE_SOURCE_TYPES.has(article.source_type)) { totalSkipped++; continue; }
+      if (isSafeSource(article.source_type)) { totalSkipped++; continue; }
 
       if (restore) {
         if (
@@ -121,6 +125,9 @@ export async function POST(request: Request) {
 
       if (article.user_relevance === "relevant") { totalSkipped++; continue; }
       if (article.exclusion_candidate && article.user_relevance === "irrelevant") { totalSkipped++; continue; }
+
+      // 保護キーワードがあればノイズ一致しても除外しない
+      if (matchesProtection(article.title, article.summary, dbProtectKeywords)) { totalSkipped++; continue; }
 
       let matchedRule: (typeof rules)[0] | null = null;
       let matchReason = "";
