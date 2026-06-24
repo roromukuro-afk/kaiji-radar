@@ -13,9 +13,9 @@
 
 import { createClient } from "@supabase/supabase-js";
 import {
-  fetchTdnetByCode,
-  fetchTdnetRecent,
+  fetchTdnetByCodeYanoshin,
   fetchTdnetByCodeDirect,
+  type TdnetItem,
 } from "../lib/fetchers/tdnet.js";
 import {
   fetchEdinetByDate,
@@ -245,74 +245,125 @@ async function main() {
     errors: [] as string[],
   };
 
+  // TDnet 取得元の診断情報 (status画面で「外部障害 vs 新着0件」を区別するため)
+  const tdnetDiag: {
+    source_used: "tier1_yanoshin" | "tier2_yahoo" | "mixed" | "failed";
+    tier1_ok: boolean;
+    tier1_stocks: number;
+    tier2_stocks: number;
+    failed_stocks: string[];
+  } = { source_used: "tier1_yanoshin", tier1_ok: false, tier1_stocks: 0, tier2_stocks: 0, failed_stocks: [] };
+
   // Shorthands for backward-compat
   const src = results.per_source;
 
   // ============================
   // 1. TDnet
   // ============================
+  // 1. TDnet  (銘柄別フォールバック)
+  //
+  //   注: yanoshin recent.rss は docId しか持たず銘柄コードが無いため
+  //       28銘柄への紐付けに使えない。銘柄別取得が唯一確実な方法。
+  //
+  //   Tier 1: yanoshin {code}.rss  — 銘柄別 (throws on error, 1回リトライ)
+  //   Tier 2: Yahoo Finance Japan  — Tier1失敗時の銘柄別フォールバック (returns [] on error)
+  //
+  //   各銘柄の取得結果を tier1/tier2/none で記録し、
+  //   「外部障害(全ソース失敗)」と「新着0件(正常)」を区別する。
+  // ============================
   console.log("[fetch-all] TDnet 取得開始");
   await updateHealth("tdnet", "checking");
-  let tdnetOk = false;
-  try {
-    let recentItems = await withRetry(() => fetchTdnetRecent(since));
 
-    // yanoshinがGitHub Actions IPをブロックしている場合は0件になる
-    // その場合はYahoo Finance Japan からスクレイプする
-    if (recentItems.length === 0) {
-      console.log("[TDnet] yanoshin 0件 → Yahoo Finance Japan フォールバック");
-      const directItems: typeof recentItems = [];
-      for (const stock of normalizedStocks) {
-        const items = await fetchTdnetByCodeDirect(stock.code, since);
-        directItems.push(...items);
-        await sleep(400);
-      }
-      if (directItems.length > 0) {
-        recentItems = directItems;
-        console.log(`[TDnet] Yahoo Finance Japan から ${recentItems.length} 件取得`);
-      }
+  const tdnetStockResults: Record<string, "tier1" | "tier2" | "none"> = {};
+  const tdnetFailedStocks: string[] = [];
+  let tier1OkCount = 0;
+
+  for (const stock of normalizedStocks) {
+    let stockItems: TdnetItem[] = [];
+    let tier1Ok = false;
+
+    // --- Tier 1: yanoshin per-stock RSS (1回リトライ) ---
+    try {
+      stockItems = await withRetry(() => fetchTdnetByCodeYanoshin(stock.code, since), 2);
+      tier1Ok = true;
+      tier1OkCount++;
+    } catch (err) {
+      // --- Tier 2: Yahoo Finance Japan ---
+      console.log(`[TDnet] Tier1 やのしん ${stock.code} 失敗: ${(err as Error).message} → Tier2 Yahoo`);
+      stockItems = await fetchTdnetByCodeDirect(stock.code, since);
     }
 
-    const byCode = groupByCode(recentItems.filter((i) => normalizedStocks.some((s) => s.code === i.code)));
-
-    for (const stock of normalizedStocks) {
-      const allItems = byCode[stock.code] ?? [];
-
-      for (const item of allItems) {
-        src.tdnet.candidates++;
-        const r = await saveArticle({
-          source_type: "tdnet",
-          source_url: item.url,
-          tdnet_doc_id: item.docId,
-          title: item.title,
-          publisher: item.submitter,
-          published_at: item.publishedAt.toISOString(),
-          summary: null,
-          is_pdf: !!item.pdfUrl,
-          doc_type: item.docType,
-          stock,
-          relevance: "certain",
-        });
-        if (r.outcome === "new") {
-          src.tdnet.saved++;
-          if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "tdnet", r.article.id);
-          await notifyArticle(r.article, stock);
-        } else if (r.outcome === "duplicate") {
-          src.tdnet.skipped++;
-        } else if (r.outcome === "updated") {
-          src.tdnet.updated++;
-        } else {
-          src.tdnet.errors++;
-        }
-      }
-      await sleep(200);
+    if (tier1Ok) {
+      tdnetStockResults[stock.code] = "tier1";
+    } else if (stockItems.length > 0) {
+      tdnetStockResults[stock.code] = "tier2";
+      console.log(`[TDnet] Tier2 Yahoo ${stock.code}: ${stockItems.length}件`);
+    } else {
+      // Tier1失敗 かつ Tier2も0件 → 全ソース失敗の可能性が高い
+      tdnetStockResults[stock.code] = "none";
+      tdnetFailedStocks.push(stock.code);
     }
-    console.log(`[TDnet] candidates=${src.tdnet.candidates} saved=${src.tdnet.saved} skipped=${src.tdnet.skipped}`);
-    tdnetOk = true;
+
+    for (const item of stockItems) {
+      src.tdnet.candidates++;
+      const r = await saveArticle({
+        source_type: "tdnet",
+        source_url: item.url,
+        tdnet_doc_id: item.docId,
+        title: item.title,
+        publisher: item.submitter,
+        published_at: item.publishedAt.toISOString(),
+        summary: null,
+        is_pdf: !!item.pdfUrl,
+        doc_type: item.docType,
+        stock,
+        relevance: "certain",
+      });
+      if (r.outcome === "new") {
+        src.tdnet.saved++;
+        if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "tdnet", r.article.id);
+        await notifyArticle(r.article, stock);
+      } else if (r.outcome === "duplicate") {
+        src.tdnet.skipped++;
+      } else if (r.outcome === "updated") {
+        src.tdnet.updated++;
+      } else {
+        src.tdnet.errors++;
+      }
+    }
+    await sleep(250);
+  }
+
+  // --- Summary and health ---
+  const tier2Stocks = Object.values(tdnetStockResults).filter((v) => v === "tier2").length;
+  console.log(
+    `[TDnet] candidates=${src.tdnet.candidates} saved=${src.tdnet.saved} skipped=${src.tdnet.skipped} ` +
+    `(Tier1=${tier1OkCount} Tier2=${tier2Stocks} 失敗=${tdnetFailedStocks.length})`
+  );
+  if (tdnetFailedStocks.length > 0) {
+    console.log(`[TDnet] 全ソース失敗銘柄: ${tdnetFailedStocks.join(", ")}`);
+  }
+
+  // 診断情報を記録 (status画面で「外部障害 vs 新着0件」を区別)
+  tdnetDiag.tier1_ok = tier1OkCount > 0;
+  tdnetDiag.tier1_stocks = tier1OkCount;
+  tdnetDiag.tier2_stocks = tier2Stocks;
+  tdnetDiag.failed_stocks = tdnetFailedStocks;
+  tdnetDiag.source_used =
+    tier1OkCount > 0 && tier2Stocks > 0 ? "mixed"
+    : tier1OkCount > 0 ? "tier1_yanoshin"
+    : tier2Stocks > 0 ? "tier2_yahoo"
+    : "failed";
+
+  // 健全性判定: 半数超の銘柄で全ソース失敗 = 外部障害
+  const failRatio = tdnetFailedStocks.length / normalizedStocks.length;
+  if (failRatio > 0.5) {
+    results.errors.push(`TDnet: ${tdnetFailedStocks.length}/${normalizedStocks.length}銘柄で全取得元失敗`);
+    await handleSourceError("tdnet", `${tdnetFailedStocks.length}/${normalizedStocks.length}銘柄で全ソース(やのしん/Yahoo)失敗`);
+  } else if (failRatio > 0) {
+    await updateHealth("tdnet", "degraded");
+  } else {
     await updateHealth("tdnet", "ok");
-  } catch (err) {
-    results.errors.push(`TDnet: ${err}`);
-    await handleSourceError("tdnet", String(err));
   }
 
   // ============================
@@ -595,6 +646,7 @@ async function main() {
             jp_news:  src.jp_news,
             en_news:  src.en_news,
           },
+          tdnet_diag: tdnetDiag,
         },
       })
       .eq("id", jobId);

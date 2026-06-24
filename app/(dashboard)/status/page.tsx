@@ -20,6 +20,14 @@ type SourceStats = {
   errors: number;
 };
 
+type TdnetDiag = {
+  source_used: "tier1_yanoshin" | "tier2_yahoo" | "mixed" | "failed";
+  tier1_ok: boolean;
+  tier1_stocks: number;
+  tier2_stocks: number;
+  failed_stocks: string[];
+};
+
 type SourceResults = {
   stocks_count?: number;
   duration_seconds?: number;
@@ -31,6 +39,7 @@ type SourceResults = {
     jp_news?: SourceStats;
     en_news?: SourceStats;
   };
+  tdnet_diag?: TdnetDiag;
 };
 
 type FetchJob = {
@@ -290,6 +299,7 @@ function FetchJobCard({ job: j }: { job: FetchJob }) {
           ) : null)}
         </div>
       )}
+      {j.status === "completed" && sr?.tdnet_diag && <TdnetDiagRow diag={sr.tdnet_diag} stocksCount={sr.stocks_count} />}
       {!sr && j.status === "completed" && (
         <p className="text-xs text-zinc-500">
           TDnet {j.tdnet_count} / EDINET {j.edinet_count} / 国内 {j.jp_news_count} / 海外 {j.en_news_count} 件
@@ -302,10 +312,43 @@ function FetchJobCard({ job: j }: { job: FetchJob }) {
   );
 }
 
+function TdnetDiagRow({ diag, stocksCount }: { diag: TdnetDiag; stocksCount?: number }) {
+  const failed = diag.failed_stocks?.length ?? 0;
+  const total = stocksCount ?? (diag.tier1_stocks + diag.tier2_stocks + failed);
+  const allFailed = diag.source_used === "failed" || failed > total / 2;
+  const partialFail = failed > 0 && !allFailed;
+
+  const label =
+    diag.source_used === "tier1_yanoshin" ? "やのしん"
+    : diag.source_used === "tier2_yahoo" ? "Yahoo Finance"
+    : diag.source_used === "mixed" ? "やのしん+Yahoo"
+    : "取得失敗";
+
+  const color = allFailed
+    ? "text-red-600 dark:text-red-400"
+    : partialFail
+      ? "text-yellow-600 dark:text-yellow-400"
+      : "text-zinc-400";
+
+  return (
+    <div className={`text-xs ${color} border-t border-zinc-100 dark:border-zinc-800 pt-1 mt-0.5`}>
+      <span className="font-medium">TDnet取得元:</span> {label}
+      {" · "}
+      <span title="やのしんRSSで成功した銘柄数">Tier1 {diag.tier1_stocks}</span>
+      {diag.tier2_stocks > 0 && <span title="Yahoo Financeフォールバックで取得した銘柄数"> · Tier2 {diag.tier2_stocks}</span>}
+      {failed > 0 && (
+        <span title="全取得元で失敗した銘柄"> · 失敗 {failed}{diag.failed_stocks?.length ? ` (${diag.failed_stocks.slice(0, 5).join(", ")}${diag.failed_stocks.length > 5 ? "…" : ""})` : ""}</span>
+      )}
+      {allFailed && <span className="ml-1">⚠ 外部障害の可能性</span>}
+    </div>
+  );
+}
+
 function HealthRow({ check: h }: { check: HealthCheck }) {
   const keyMissing = h.status === "key_missing" || h.error_message === "APIキー未設定";
-  const ok = !keyMissing && h.consecutive_failures === 0 && h.last_success_at != null;
-  const warn = !keyMissing && h.consecutive_failures > 0 && h.consecutive_failures < 3;
+  const degraded = !keyMissing && h.status === "degraded";
+  const ok = !keyMissing && !degraded && h.consecutive_failures === 0 && h.last_success_at != null;
+  const warn = !keyMissing && (degraded || (h.consecutive_failures > 0 && h.consecutive_failures < 3));
   const err = !keyMissing && h.consecutive_failures >= 3;
 
   return (
@@ -323,11 +366,17 @@ function HealthRow({ check: h }: { check: HealthCheck }) {
               ? `最終成功: ${formatRelative(h.last_success_at)}`
               : "未確認"}
           {!keyMissing && h.consecutive_failures > 0 && ` · ${h.consecutive_failures}回連続失敗`}
+          {degraded && h.consecutive_failures === 0 && " · 一部銘柄で取得失敗 (フォールバック稼働)"}
         </p>
       </div>
       {keyMissing && (
         <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 flex-shrink-0">
           キー未設定
+        </span>
+      )}
+      {degraded && (
+        <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 flex-shrink-0">
+          一部失敗
         </span>
       )}
     </div>

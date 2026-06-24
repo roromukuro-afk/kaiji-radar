@@ -1,17 +1,18 @@
 /**
  * TDnet 適時開示取得
  *
- * 一次ソース: やのしん WEB-API (https://webapi.yanoshin.jp/webapi/tdnet/)
- * フォールバック: Yahoo Finance Japan (https://finance.yahoo.co.jp/quote/{code}.T/disclosure)
- *   - yanoshin が GitHub Actions IP をブロックする場合に使用
- *   - Yahoo Finance Japan は SSR でページ内に開示データを含むため HTML スクレイピング可能
- *   - TDnet docId = "1401" + Yahoo 14桁ファイルID で復元可能
+ * 取得元 (フォールバック順):
+ *   Tier 1: やのしん WEB-API recent.rss  — 全銘柄まとめて取得（15s timeout）
+ *   Tier 2: やのしん WEB-API {code}.rss  — 銘柄別（10s timeout）
+ *   Tier 3: Yahoo Finance Japan スクレイプ — yanoshin 完全失敗時の最終手段
  *
- * 参考: やのしん WEB-API は 2007 年から公開され実績ある非公式 API。
- * 公式 TDnet API は月額 7 万円超のため採用外。
+ * 設計:
+ *   - fetchTdnetRecent / fetchTdnetByCodeYanoshin はエラー時に throw する
+ *     → 呼び出し元で withRetry が機能し、フォールバック戦略を制御できる
+ *   - fetchTdnetByCodeDirect (Yahoo Finance) は例外を握りつぶして [] を返す
+ *     → 最終手段として常に「何かを返す」ことを保証する
  *
- * 注: undici (Node fetch) の connectTimeout がデフォルト 10s で yanoshin に届かない。
- * Node.js 組み込みの https.get() を使用することで回避。
+ * やのしん WEB-API: 2007 年から公開されている非公式 API。公式 TDnet API は月額 7 万円超のため採用外。
  */
 
 import https from "https";
@@ -30,28 +31,39 @@ export interface TdnetItem {
 
 const YANOSHIN_BASE = "https://webapi.yanoshin.jp/webapi/tdnet/list";
 const UA = "KaijiRadar/1.0 (+https://github.com/roromukuro/kaiji-radar)";
-const UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const UA_BROWSER =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
 
-function httpsGet(url: string, timeoutMs = 8000, browserUa = false): Promise<string> {
+function httpsGet(url: string, timeoutMs = 10000, browserUa = false): Promise<string> {
   const ua = browserUa ? UA_BROWSER : UA;
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { "User-Agent": ua, "Accept-Language": "ja,en;q=0.9" } }, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        req.destroy();
-        httpsGet(res.headers.location, timeoutMs).then(resolve).catch(reject);
-        return;
+    const req = https.get(
+      url,
+      {
+        headers: {
+          "User-Agent": ua,
+          "Accept-Language": "ja,en;q=0.9",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          req.destroy();
+          httpsGet(res.headers.location, timeoutMs, browserUa).then(resolve).catch(reject);
+          return;
+        }
+        if (!res.statusCode || res.statusCode >= 400) {
+          req.destroy();
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        res.on("data", (d) => chunks.push(d));
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        res.on("error", reject);
       }
-      if (!res.statusCode || res.statusCode >= 400) {
-        req.destroy();
-        reject(new Error(`HTTP ${res.statusCode}`));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      res.on("data", (d) => chunks.push(d));
-      res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      res.on("error", reject);
-    });
+    );
     req.setTimeout(timeoutMs, () => {
       req.destroy();
       reject(new Error(`Request timed out after ${timeoutMs}ms`));
@@ -60,85 +72,84 @@ function httpsGet(url: string, timeoutMs = 8000, browserUa = false): Promise<str
   });
 }
 
-async function fetchRss(url: string): Promise<any[]> {
-  const xml = await httpsGet(url);
+async function fetchRss(url: string, timeoutMs = 10000): Promise<any[]> {
+  const xml = await httpsGet(url, timeoutMs);
   const parsed = xmlParser.parse(xml);
   const items = parsed?.rss?.channel?.item ?? [];
   return Array.isArray(items) ? items : [items];
 }
 
-export async function fetchTdnetByCode(
+function parseRssItems(rawItems: any[], code: string, since?: Date): TdnetItem[] {
+  const items: TdnetItem[] = [];
+  for (const item of rawItems) {
+    const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
+    if (since && pubDate <= since) continue;
+
+    const link = item.link ?? item.guid ?? "";
+    const docId = extractTdnetDocId(link);
+    const pdfUrl = extractTdnetPdfUrl(link);
+
+    items.push({
+      docId: docId ?? `tdnet-${code}-${pubDate.getTime()}`,
+      code,
+      title: item.title ?? "(タイトルなし)",
+      publishedAt: pubDate,
+      url: link,
+      pdfUrl,
+      submitter: item["dc:creator"] ?? "",
+      docType: extractDocType(item.title ?? ""),
+    });
+  }
+  return items;
+}
+
+// ============================================================
+// Tier 1: yanoshin recent.rss — 全銘柄まとめて (THROWS on error)
+// ============================================================
+export async function fetchTdnetRecent(since: Date): Promise<TdnetItem[]> {
+  const url = `${YANOSHIN_BASE}/recent.rss`;
+  // 15s timeout — recent.rss は全社分のデータなので大きい
+  const rawItems = await fetchRss(url, 15000);
+  const items: TdnetItem[] = [];
+
+  for (const item of rawItems) {
+    const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
+    if (pubDate <= since) continue;
+
+    const link = item.link ?? item.guid ?? "";
+    const codeMatch = link.match(/\/(\d{4})\//);
+    const code = codeMatch?.[1] ?? "";
+    const docId = extractTdnetDocId(link);
+
+    items.push({
+      docId: docId ?? `tdnet-${code}-${pubDate.getTime()}`,
+      code,
+      title: item.title ?? "(タイトルなし)",
+      publishedAt: pubDate,
+      url: link,
+      pdfUrl: extractTdnetPdfUrl(link),
+      submitter: item["dc:creator"] ?? "",
+      docType: extractDocType(item.title ?? ""),
+    });
+  }
+  return items;
+}
+
+// ============================================================
+// Tier 2: yanoshin {code}.rss — 銘柄別 (THROWS on error)
+// ============================================================
+export async function fetchTdnetByCodeYanoshin(
   code: string,
   since?: Date
 ): Promise<TdnetItem[]> {
   const url = `${YANOSHIN_BASE}/${code}.rss`;
-  try {
-    const rawItems = await fetchRss(url);
-    const items: TdnetItem[] = [];
-
-    for (const item of rawItems) {
-      const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
-      if (since && pubDate <= since) continue;
-
-      const link = item.link ?? item.guid ?? "";
-      const docId = extractTdnetDocId(link);
-      const pdfUrl = extractTdnetPdfUrl(link);
-
-      items.push({
-        docId: docId ?? `tdnet-${code}-${pubDate.getTime()}`,
-        code,
-        title: item.title ?? "(タイトルなし)",
-        publishedAt: pubDate,
-        url: link,
-        pdfUrl,
-        submitter: "",
-        docType: extractDocType(item.title ?? ""),
-      });
-    }
-    return items;
-  } catch (err) {
-    console.error(`[TDnet] やのしん RSS 取得失敗 ${code}:`, err);
-    return fetchTdnetByCodeDirect(code, since);
-  }
+  const rawItems = await fetchRss(url, 10000);
+  return parseRssItems(rawItems, code, since);
 }
 
-export async function fetchTdnetRecent(since: Date): Promise<TdnetItem[]> {
-  const url = `${YANOSHIN_BASE}/recent.rss`;
-  try {
-    const rawItems = await fetchRss(url);
-    const items: TdnetItem[] = [];
-
-    for (const item of rawItems) {
-      const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
-      if (pubDate <= since) continue;
-
-      const link = item.link ?? item.guid ?? "";
-      const docId = extractTdnetDocId(link);
-      const codeMatch = link.match(/\/(\d{4})\//);
-      const code = codeMatch?.[1] ?? "";
-
-      items.push({
-        docId: docId ?? `tdnet-${code}-${pubDate.getTime()}`,
-        code,
-        title: item.title ?? "(タイトルなし)",
-        publishedAt: pubDate,
-        url: link,
-        pdfUrl: extractTdnetPdfUrl(link),
-        submitter: item["dc:creator"] ?? "",
-        docType: extractDocType(item.title ?? ""),
-      });
-    }
-    return items;
-  } catch (err) {
-    console.error("[TDnet] recent RSS 取得失敗:", err);
-    return [];
-  }
-}
-
-// Yahoo Finance Japan の適時開示ページからスクレイプ
-// yanoshin が GitHub Actions IP をブロックする場合のフォールバック
-// URL: https://finance.yahoo.co.jp/quote/{code}.T/disclosure
-// TDnet docId = "1401" + Yahoo 14桁ファイルID で復元
+// ============================================================
+// Tier 3: Yahoo Finance Japan — 最終手段 (returns [] on error)
+// ============================================================
 export async function fetchTdnetByCodeDirect(
   code: string,
   since?: Date
@@ -148,11 +159,29 @@ export async function fetchTdnetByCodeDirect(
     const html = await httpsGet(url, 20000, true);
     return parseYahooFinanceHtml(html, code, since);
   } catch (err) {
-    console.error(`[TDnet] Yahoo Finance 取得失敗 ${code}:`, err);
+    console.error(`[TDnet] Yahoo Finance 取得失敗 ${code}:`, (err as Error).message);
     return [];
   }
 }
 
+// ============================================================
+// fetchTdnetByCode — Tier 2 → Tier 3 (後方互換)
+// ============================================================
+export async function fetchTdnetByCode(
+  code: string,
+  since?: Date
+): Promise<TdnetItem[]> {
+  try {
+    return await fetchTdnetByCodeYanoshin(code, since);
+  } catch (err) {
+    console.error(`[TDnet] やのしん RSS 失敗 ${code}: ${(err as Error).message} → Yahoo Finance フォールバック`);
+    return fetchTdnetByCodeDirect(code, since);
+  }
+}
+
+// ============================================================
+// Yahoo Finance HTML parser
+// ============================================================
 function parseYahooFinanceHtml(html: string, code: string, since?: Date): TdnetItem[] {
   const items: TdnetItem[] = [];
   const articleRegex = /<article[^>]*>[\s\S]*?<\/article>/g;
@@ -174,14 +203,12 @@ function parseYahooFinanceHtml(html: string, code: string, since?: Date): TdnetI
     const pdfUrl = hrefMatch[1];
     const fileMatch = pdfUrl.match(/\/(\d+)\.pdf$/);
     const yahooDocId = fileMatch?.[1];
-    // TDnet 18桁 docId = "1401" + Yahoo 14桁ファイルID
     const docId =
       yahooDocId && yahooDocId.length === 14
         ? `1401${yahooDocId}`
         : yahooDocId ?? `yahoo-${code}-${pubDate.getTime()}`;
 
     const title = titleMatch[1].trim();
-
     items.push({
       docId,
       code,
@@ -196,7 +223,9 @@ function parseYahooFinanceHtml(html: string, code: string, since?: Date): TdnetI
   return items;
 }
 
-
+// ============================================================
+// Helpers
+// ============================================================
 function extractTdnetDocId(url: string): string | null {
   const match = url.match(/(\d{18})/);
   return match?.[1] ?? null;
@@ -210,7 +239,7 @@ function extractTdnetPdfUrl(pageUrl: string): string | null {
 }
 
 function extractDocType(title: string): string | null {
-  const patterns = [
+  const patterns: [string, string][] = [
     ["決算短信", "決算短信"],
     ["業績予想", "業績予想修正"],
     ["配当", "配当"],
