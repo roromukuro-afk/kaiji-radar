@@ -40,7 +40,7 @@ import {
   buildPushPayload,
 } from "../lib/notifications/web-push.js";
 import { sendErrorEmail, sendRecoveryEmail, sendPendingArticlesEmail } from "../lib/notifications/email.js";
-import { GLOBAL_PROTECT_KEYWORDS, isSafeSource, matchesProtection } from "../lib/noise/protection.js";
+import { GLOBAL_PROTECT_KEYWORDS, isSafeSource, matchesProtection, uniqueProtectCount } from "../lib/noise/protection.js";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -177,9 +177,10 @@ async function main() {
 
   const totalRules = exclusionRules.length + noiseRules.length;
   if (totalRules > 0) {
+    const uniqueKw = uniqueProtectCount(dbProtectKeywords);
     console.log(
       `[fetch-all] ノイズルール: legacy=${exclusionRules.length} noise_rules=${noiseRules.length} 件ロード ` +
-      `(保護KW: 共通${GLOBAL_PROTECT_KEYWORDS.length} + DB${dbProtectKeywords.length})`
+      `(保護KW: コード${GLOBAL_PROTECT_KEYWORDS.length} + DB${dbProtectKeywords.length} → unique${uniqueKw})`
     );
   }
 

@@ -54,7 +54,8 @@ export function isSafeSource(sourceType: string): boolean {
 
 /**
  * 保護キーワードに一致するか判定
- * @param extraProtect DBの strengthen ルール由来の追加保護語
+ * @param extraProtect DBの strengthen ルール由来の追加保護語 (コード側と重複可、Set で統合)
+ * @returns マッチしたキーワード or null
  */
 export function matchesProtection(
   title: string,
@@ -62,8 +63,23 @@ export function matchesProtection(
   extraProtect: string[] = []
 ): string | null {
   const text = (title + " " + (summary ?? "")).toLowerCase();
-  for (const kw of [...GLOBAL_PROTECT_KEYWORDS, ...extraProtect]) {
-    if (text.includes(kw.toLowerCase())) return kw;
+  // GLOBAL_PROTECT_KEYWORDS とDB由来extraProtectをSetで重複排除
+  const uniqueKw = new Set([
+    ...GLOBAL_PROTECT_KEYWORDS.map((k) => k.toLowerCase()),
+    ...extraProtect.map((k) => k.toLowerCase()),
+  ]);
+  for (const kw of uniqueKw) {
+    if (text.includes(kw)) return kw;
   }
   return null;
+}
+
+/**
+ * 保護キーワードのユニーク件数を返す (ログ用)
+ */
+export function uniqueProtectCount(extraProtect: string[] = []): number {
+  return new Set([
+    ...GLOBAL_PROTECT_KEYWORDS.map((k) => k.toLowerCase()),
+    ...extraProtect.map((k) => k.toLowerCase()),
+  ]).size;
 }
