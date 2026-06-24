@@ -123,7 +123,18 @@ async function main() {
       : s.stock_profiles,
   }));
 
-  // Load active keyword exclusion rules (graceful fallback if table not yet migrated)
+  // ============================
+  // Load exclusion/noise rules
+  // ============================
+
+  // TDnet / EDINET / official は絶対に除外しない (安全ソース)
+  const SAFE_SOURCE_TYPES = new Set(["tdnet", "edinet", "official"]);
+
+  function extractDomain(url: string): string {
+    try { return new URL(url).hostname; } catch { return url; }
+  }
+
+  // Legacy stock_keyword_rules (Phase 3.1)
   type ExclusionRule = {
     stock_id: string;
     keyword: string | null;
@@ -138,39 +149,83 @@ async function main() {
       .select("stock_id, keyword, rule_type, domain, confirmation_count")
       .eq("is_active", true);
     if (ruleData) exclusionRules = ruleData;
-    if (exclusionRules.length > 0) {
-      console.log(`[fetch-all] 除外ルール: ${exclusionRules.length} 件ロード`);
-    }
-  } catch {
-    // Table may not exist yet — proceed without rules
+  } catch { /* Table may not exist yet */ }
+
+  // Phase 3.2 noise_rules (comprehensive)
+  type NoiseRule = {
+    id: string;
+    stock_id: string | null;
+    scope: string;
+    rule_type: string;
+    match_type: string;
+    match_value: string;
+    is_active: boolean;
+  };
+  let noiseRules: NoiseRule[] = [];
+  try {
+    const { data: nrData } = await supabase
+      .from("noise_rules")
+      .select("id, stock_id, scope, rule_type, match_type, match_value, is_active")
+      .eq("is_active", true);
+    if (nrData) noiseRules = nrData;
+  } catch { /* Table may not exist yet */ }
+
+  const totalRules = exclusionRules.length + noiseRules.length;
+  if (totalRules > 0) {
+    console.log(`[fetch-all] ノイズルール: legacy=${exclusionRules.length} noise_rules=${noiseRules.length} 件ロード`);
   }
 
   function applyExclusionRules(
+    sourceType: string,
     title: string,
     summary: string | null | undefined,
     url: string,
+    publisher: string | null | undefined,
     stockId: string
   ): { exclusion_candidate: boolean; exclusion_reason: string | null } {
-    const stockRules = exclusionRules.filter((r) => r.stock_id === stockId);
-    const text = (title + " " + (summary ?? "")).toLowerCase();
+    // 安全ソースは絶対に除外しない
+    if (SAFE_SOURCE_TYPES.has(sourceType)) {
+      return { exclusion_candidate: false, exclusion_reason: null };
+    }
 
+    const text = (title + " " + (summary ?? "")).toLowerCase();
+    const domain = extractDomain(url);
+
+    // Phase 3.2 noise_rules を先にチェック
+    const stockNoiseRules = noiseRules.filter(
+      (r) => r.scope === "all_stocks" || r.stock_id === stockId
+    );
+    for (const rule of stockNoiseRules) {
+      if (rule.rule_type === "strengthen") continue;
+      let matched = false;
+      switch (rule.match_type) {
+        case "keyword":    matched = text.includes(rule.match_value.toLowerCase()); break;
+        case "domain":     matched = domain.includes(rule.match_value.toLowerCase()); break;
+        case "url_pattern":matched = url.toLowerCase().includes(rule.match_value.toLowerCase()); break;
+        case "publisher":  matched = (publisher ?? "").toLowerCase().includes(rule.match_value.toLowerCase()); break;
+      }
+      if (matched) {
+        return {
+          exclusion_candidate: true,
+          exclusion_reason: `ノイズルール一致: ${rule.match_type}="${rule.match_value}"`,
+        };
+      }
+    }
+
+    // Legacy stock_keyword_rules フォールバック
+    const stockRules = exclusionRules.filter((r) => r.stock_id === stockId);
     for (const rule of stockRules) {
       if (rule.rule_type === "domain_exclude" && rule.domain) {
         if (url.includes(rule.domain)) {
-          return {
-            exclusion_candidate: true,
-            exclusion_reason: `同名別会社ドメイン除外: ${rule.domain}`,
-          };
+          return { exclusion_candidate: true, exclusion_reason: `同名別会社ドメイン除外: ${rule.domain}` };
         }
       } else if (rule.rule_type === "exclude_candidate" && rule.keyword) {
         if (text.includes(rule.keyword.toLowerCase())) {
-          return {
-            exclusion_candidate: true,
-            exclusion_reason: `除外キーワード一致: ${rule.keyword}`,
-          };
+          return { exclusion_candidate: true, exclusion_reason: `除外キーワード一致: ${rule.keyword}` };
         }
       }
     }
+
     return { exclusion_candidate: false, exclusion_reason: null };
   }
 
@@ -381,7 +436,7 @@ async function main() {
         }
 
         // Check user-defined exclusion rules (applied after relevance; certain/uncertain articles)
-        const excl = applyExclusionRules(item.title, item.summary, item.url, stock.id);
+        const excl = applyExclusionRules(item.sourceType, item.title, item.summary, item.url, item.publisher, stock.id);
 
         const r = await saveArticle({
           source_type: item.sourceType,
@@ -459,7 +514,7 @@ async function main() {
 
         try { titleJa = await translateTitleJa(item.title); } catch { titleJa = null; }
 
-        const enExcl = applyExclusionRules(item.title, item.summary, item.url, stock.id);
+        const enExcl = applyExclusionRules("en_news", item.title, item.summary, item.url, item.publisher, stock.id);
 
         const r = await saveArticle({
           source_type: "en_news",

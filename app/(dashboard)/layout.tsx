@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
 const NAV = [
   { href: "/", label: "新着" },
   { href: "/stocks", label: "銘柄" },
-  { href: "/manage", label: "管理" },
+  { href: "/rules", label: "ルール" },
   { href: "/status", label: "状態" },
   { href: "/history", label: "履歴" },
 ];

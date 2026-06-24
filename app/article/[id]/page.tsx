@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { formatJST, sourceTypeLabel, sourceTypeColor } from "@/lib/utils";
 import Link from "next/link";
 import { FeedbackPanel } from "./FeedbackPanel";
+import { NoiseReportPanel } from "./NoiseReportPanel";
 
 type Stock = { id: string; code: string; name: string };
 
@@ -133,6 +134,16 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
                 systemExclusion={article.exclusion_candidate === true}
               />
             ))}
+            {/* Noise report — shown when ニュース (not TDnet/EDINET/official) */}
+            {!["tdnet", "edinet", "official"].includes(article.source_type) && stocks[0] && (
+              <NoiseReportPanel
+                articleId={id}
+                stock={stocks[0]}
+                articleTitle={article.title}
+                articleUrl={article.source_url ?? ""}
+                publisher={article.publisher ?? null}
+              />
+            )}
           </div>
         )}
 
