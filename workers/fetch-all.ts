@@ -281,6 +281,7 @@ async function main() {
   for (const stock of normalizedStocks) {
     let stockItems: TdnetItem[] = [];
     let tier1Ok = false;
+    let tier2Ok = false;
 
     // --- Tier 1: yanoshin per-stock RSS (1回リトライ) ---
     try {
@@ -289,17 +290,24 @@ async function main() {
       tier1OkCount++;
     } catch (err) {
       // --- Tier 2: Yahoo Finance Japan ---
+      // 取得成功(0件含む) → tier2Ok=true / HTTPエラー → throw を catch して失敗扱い
       console.log(`[TDnet] Tier1 やのしん ${stock.code} 失敗: ${(err as Error).message} → Tier2 Yahoo`);
-      stockItems = await fetchTdnetByCodeDirect(stock.code, since);
+      try {
+        stockItems = await fetchTdnetByCodeDirect(stock.code, since);
+        tier2Ok = true;
+      } catch (err2) {
+        console.log(`[TDnet] Tier2 Yahoo ${stock.code} も失敗: ${(err2 as Error).message}`);
+      }
     }
 
     if (tier1Ok) {
       tdnetStockResults[stock.code] = "tier1";
-    } else if (stockItems.length > 0) {
+    } else if (tier2Ok) {
+      // Yahoo 取得成功 (0件でも「新着なし」として正常扱い)
       tdnetStockResults[stock.code] = "tier2";
-      console.log(`[TDnet] Tier2 Yahoo ${stock.code}: ${stockItems.length}件`);
+      if (stockItems.length > 0) console.log(`[TDnet] Tier2 Yahoo ${stock.code}: ${stockItems.length}件`);
     } else {
-      // Tier1失敗 かつ Tier2も0件 → 全ソース失敗の可能性が高い
+      // やのしん・Yahoo 両方が HTTPエラー → 真の取得失敗
       tdnetStockResults[stock.code] = "none";
       tdnetFailedStocks.push(stock.code);
     }

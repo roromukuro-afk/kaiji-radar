@@ -148,16 +148,26 @@ export async function fetchTdnetByCodeYanoshin(
 }
 
 // ============================================================
-// Tier 3: Yahoo Finance Japan — 最終手段 (returns [] on error)
+// Tier 2 (fallback): Yahoo Finance Japan
+//   - HTTP エラー時は throw する (真の取得失敗を呼び出し元で区別するため)
+//   - HTML 取得に成功し開示が0件なら [] を返す (新着なし = 正常)
 // ============================================================
 export async function fetchTdnetByCodeDirect(
   code: string,
   since?: Date
 ): Promise<TdnetItem[]> {
+  const url = `https://finance.yahoo.co.jp/quote/${code}.T/disclosure`;
+  const html = await httpsGet(url, 20000, true);
+  return parseYahooFinanceHtml(html, code, since);
+}
+
+// エラーを握りつぶして [] を返す安全版 (backfill など失敗を無視したい用途向け)
+export async function fetchTdnetByCodeDirectSafe(
+  code: string,
+  since?: Date
+): Promise<TdnetItem[]> {
   try {
-    const url = `https://finance.yahoo.co.jp/quote/${code}.T/disclosure`;
-    const html = await httpsGet(url, 20000, true);
-    return parseYahooFinanceHtml(html, code, since);
+    return await fetchTdnetByCodeDirect(code, since);
   } catch (err) {
     console.error(`[TDnet] Yahoo Finance 取得失敗 ${code}:`, (err as Error).message);
     return [];
@@ -175,7 +185,7 @@ export async function fetchTdnetByCode(
     return await fetchTdnetByCodeYanoshin(code, since);
   } catch (err) {
     console.error(`[TDnet] やのしん RSS 失敗 ${code}: ${(err as Error).message} → Yahoo Finance フォールバック`);
-    return fetchTdnetByCodeDirect(code, since);
+    return fetchTdnetByCodeDirectSafe(code, since);
   }
 }
 
