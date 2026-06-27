@@ -140,14 +140,19 @@ async function main() {
 
     if (!restore && stockRules.length === 0) continue;
 
-    // Fetch linked articles
-    const { data: linked } = await supabase
-      .from("article_stocks")
-      .select("article_id, articles!inner(id,title,summary,source_url,publisher,source_type,exclusion_candidate,user_relevance,exclusion_reason)")
-      .eq("stock_id", stock.id);
-
-    if (!linked) continue;
-    const articles = (linked as unknown as { articles: ArticleRow }[]).map((r) => r.articles);
+    // Fetch linked articles (paginate to avoid 1000-row Supabase default limit)
+    const articles: ArticleRow[] = [];
+    const PAGE = 1000;
+    for (let offset = 0; ; offset += PAGE) {
+      const { data: linked } = await supabase
+        .from("article_stocks")
+        .select("article_id, articles!inner(id,title,summary,source_url,publisher,source_type,exclusion_candidate,user_relevance,exclusion_reason)")
+        .eq("stock_id", stock.id)
+        .range(offset, offset + PAGE - 1);
+      if (!linked || linked.length === 0) break;
+      articles.push(...(linked as unknown as { articles: ArticleRow }[]).map((r) => r.articles));
+      if (linked.length < PAGE) break;
+    }
 
     for (const article of articles) {
       totalScanned++;
