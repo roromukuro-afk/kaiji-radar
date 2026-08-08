@@ -64,6 +64,7 @@ interface StockProfile {
   ir_url: string | null;
   press_release_url: string | null;
   notify_event_types: string[] | null;
+  force_ai_relevance_check: boolean;
 }
 
 interface StockRecord {
@@ -111,7 +112,7 @@ async function main() {
     .from("stocks")
     .select(`
       id, code, name, name_en, edinet_code, sec_code,
-      stock_profiles (rss_urls, jp_keywords, en_keywords, official_url, ir_url, press_release_url, notify_event_types)
+      stock_profiles (rss_urls, jp_keywords, en_keywords, official_url, ir_url, press_release_url, notify_event_types, force_ai_relevance_check)
     `)
     .eq("status", "active");
 
@@ -501,11 +502,15 @@ async function main() {
           stock.code,
           profile?.jp_keywords ?? []
         );
+        // 球団名=社名等の銘柄(ソフトバンク/オリックス等)は、銘柄名の完全一致だけで
+        // certain扱いにするとAIの「同名の別会社/無関係」判定をスキップしてしまうため、
+        // 常にAIで判定させる
+        const forceAi = profile?.force_ai_relevance_check === true;
 
         let relevance: "certain" | "uncertain" | "irrelevant" = match ? "certain" : "uncertain";
         let relevanceReason = "";
 
-        if (!match) {
+        if (!match || forceAi) {
           const check = await checkRelevance(
             item.title, item.summary, stock.code, stock.name, profile?.jp_keywords ?? []
           );
@@ -586,12 +591,13 @@ async function main() {
           stock.code,
           profile?.en_keywords ?? []
         );
+        const forceAi = profile?.force_ai_relevance_check === true;
 
         let relevance: "certain" | "uncertain" | "irrelevant" = match ? "certain" : "uncertain";
         let relevanceReason = "";
         let titleJa: string | null = null;
 
-        if (!match) {
+        if (!match || forceAi) {
           const check = await checkRelevance(
             item.title, item.summary, stock.code, stock.name,
             [...(profile?.jp_keywords ?? []), ...(profile?.en_keywords ?? [])]

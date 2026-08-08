@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS stock_profiles (
   en_keywords JSONB NOT NULL DEFAULT '[]',
   source_urls JSONB NOT NULL DEFAULT '[]',  -- 情報根拠URL
   notify_event_types JSONB,  -- 通知する開示種別リスト (null = 全種別を通知)
+  force_ai_relevance_check BOOLEAN NOT NULL DEFAULT FALSE,  -- 球団名=社名等の銘柄でAI判定を強制
   last_checked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
