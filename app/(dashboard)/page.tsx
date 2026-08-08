@@ -19,6 +19,7 @@ type Article = {
   is_overseas: boolean;
   is_update: boolean;
   is_pdf: boolean;
+  is_important: boolean;
   relevance: string;
   user_relevance: string | null;
   exclusion_candidate: boolean | null;
@@ -32,7 +33,7 @@ type Stock = {
   name: string;
 };
 
-const SOURCE_TYPES = ["tdnet", "edinet", "official", "jp_news", "en_news"] as const;
+const SOURCE_TYPES = ["tdnet", "edinet", "official", "pr_times", "jp_news", "en_news"] as const;
 
 type DateRange = "24h" | "7d" | "30d" | "all";
 
@@ -43,6 +44,7 @@ type Filter = {
   relevance: string;
   isPaywalled: boolean;
   isUpdate: boolean;
+  isImportant: boolean;
   dateRange: DateRange;
   q: string;
 };
@@ -54,6 +56,7 @@ const INITIAL_FILTER: Filter = {
   relevance: "",
   isPaywalled: false,
   isUpdate: false,
+  isImportant: false,
   dateRange: "all",
   q: "",
 };
@@ -75,6 +78,7 @@ function countActiveFilters(f: Filter): number {
   if (f.relevance) n++;
   if (f.isPaywalled) n++;
   if (f.isUpdate) n++;
+  if (f.isImportant) n++;
   if (f.dateRange !== "all") n++;
   if (f.q) n++;
   return n;
@@ -109,6 +113,7 @@ export default function FeedPage() {
     if (filter.relevance) params.set("relevance", filter.relevance);
     if (filter.isPaywalled) params.set("is_paywalled", "true");
     if (filter.isUpdate) params.set("is_update", "true");
+    if (filter.isImportant) params.set("is_important", "true");
     if (filter.q) params.set("q", filter.q);
     const after = getPublishedAfter(filter.dateRange);
     if (after) params.set("published_after", after);
@@ -287,6 +292,16 @@ export default function FeedPage() {
             <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
               <input
                 type="checkbox"
+                checked={filter.isImportant}
+                onChange={(e) => setFilter((f) => ({ ...f, isImportant: e.target.checked }))}
+                className="w-4 h-4 rounded"
+              />
+              <span className="text-zinc-700 dark:text-zinc-300">重要開示のみ</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+              <input
+                type="checkbox"
                 checked={filter.isPaywalled}
                 onChange={(e) => setFilter((f) => ({ ...f, isPaywalled: e.target.checked }))}
                 className="w-4 h-4 rounded"
@@ -304,6 +319,9 @@ export default function FeedPage() {
               <span className="text-zinc-700 dark:text-zinc-300">更新記事のみ</span>
             </label>
           </div>
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            重要開示 = TDnet/EDINET/公式発表、または決算・M&amp;A・行政処分など開示カテゴリに一致する記事(投資判断の評価ではありません)
+          </p>
         </div>
       )}
 
@@ -413,6 +431,9 @@ function ArticleCard({ article: a, onRead }: { article: Article; onRead: () => v
                 {s.code} {s.name}
               </span>
             ))}
+            {a.is_important && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400 font-semibold border border-red-200 dark:border-red-800">★重要</span>
+            )}
             {a.is_update && (
               <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200">更新</span>
             )}

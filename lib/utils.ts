@@ -18,6 +18,7 @@ export function sourceTypeLabel(type: string): string {
     tdnet: "TDnet",
     edinet: "EDINET",
     official: "公式",
+    pr_times: "PR TIMES",
     jp_news: "国内",
     en_news: "海外",
   };
@@ -29,6 +30,7 @@ export function sourceTypeColor(type: string): string {
     tdnet: "bg-blue-100 text-blue-800",
     edinet: "bg-purple-100 text-purple-800",
     official: "bg-green-100 text-green-800",
+    pr_times: "bg-pink-100 text-pink-800",
     jp_news: "bg-gray-100 text-gray-800",
     en_news: "bg-orange-100 text-orange-800",
   };

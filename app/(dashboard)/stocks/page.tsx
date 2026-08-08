@@ -21,6 +21,7 @@ type ArticleStockRow = {
   articles: {
     id: string;
     is_read: boolean;
+    is_important: boolean;
     published_at: string | null;
     created_at: string;
   };
@@ -43,7 +44,7 @@ export default async function StocksPage() {
   // Fetch all article_stocks with article metadata in one query
   const { data: articleStocksData } = await supabase
     .from("article_stocks")
-    .select("stock_id, articles!inner (id, is_read, published_at, created_at)")
+    .select("stock_id, articles!inner (id, is_read, is_important, published_at, created_at)")
     .order("articles.published_at", { ascending: false });
 
   const articleStocks = (articleStocksData ?? []) as unknown as ArticleStockRow[];
@@ -56,6 +57,7 @@ export default async function StocksPage() {
     total: number;
     unread: number;
     last24h: number;
+    importantUnread: number;
   };
 
   const statsMap = new Map<string, StockStats>();
@@ -63,11 +65,12 @@ export default async function StocksPage() {
   for (const row of articleStocks) {
     const sid = row.stock_id;
     if (!statsMap.has(sid)) {
-      statsMap.set(sid, { total: 0, unread: 0, last24h: 0 });
+      statsMap.set(sid, { total: 0, unread: 0, last24h: 0, importantUnread: 0 });
     }
     const s = statsMap.get(sid)!;
     s.total += 1;
     if (!row.articles.is_read) s.unread += 1;
+    if (!row.articles.is_read && row.articles.is_important) s.importantUnread += 1;
     const pub = row.articles.published_at ?? row.articles.created_at;
     if (pub && new Date(pub).getTime() >= h24ago) s.last24h += 1;
   }
@@ -125,11 +128,12 @@ function StockCard({
   stats,
 }: {
   stock: Stock;
-  stats: { total: number; unread: number; last24h: number } | undefined;
+  stats: { total: number; unread: number; last24h: number; importantUnread: number } | undefined;
 }) {
   const total   = stats?.total   ?? 0;
   const unread  = stats?.unread  ?? 0;
   const last24h = stats?.last24h ?? 0;
+  const importantUnread = stats?.importantUnread ?? 0;
   // Supabase may return join as array or object depending on client version
   const profile: StockProfile | null = Array.isArray(stock.stock_profiles)
     ? (stock.stock_profiles[0] ?? null)
@@ -155,6 +159,11 @@ function StockCard({
             {unread > 0 && (
               <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-500 text-white font-medium">
                 {unread}
+              </span>
+            )}
+            {importantUnread > 0 && (
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400 font-semibold border border-red-200 dark:border-red-800">
+                ★{importantUnread}
               </span>
             )}
           </div>

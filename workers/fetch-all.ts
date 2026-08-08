@@ -762,6 +762,11 @@ async function saveArticle(params: {
   if (params.exclusion_reason !== undefined) {
     insertPayload.exclusion_reason = params.exclusion_reason;
   }
+  // 重要開示フラグ: 安全ソース(TDnet/EDINET/公式) または 決算・M&A・行政処分等の
+  // 重要開示キーワード一致。投資判断ではなく開示カテゴリの客観分類。
+  insertPayload.is_important =
+    isSafeSource(params.source_type) ||
+    matchesProtection(params.title, params.summary) !== null;
 
   const { data: article, error } = await supabase
     .from("articles")

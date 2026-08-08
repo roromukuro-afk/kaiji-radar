@@ -4,6 +4,7 @@ import { formatJST, sourceTypeLabel, sourceTypeColor } from "@/lib/utils";
 import Link from "next/link";
 import { FeedbackPanel } from "./FeedbackPanel";
 import { NoiseReportPanel } from "./NoiseReportPanel";
+import { ShareToChatGptButton } from "./ShareToChatGptButton";
 
 type Stock = { id: string; code: string; name: string };
 
@@ -113,6 +114,15 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
           {article.publisher && <p>{article.publisher}</p>}
           {article.published_at && <p>{formatJST(article.published_at)}</p>}
         </div>
+
+        {/* Share to ChatGPT */}
+        <ShareToChatGptButton
+          stockLabel={stocks.length > 0 ? stocks.map((s) => `${s.code} ${s.name}`).join("、") : null}
+          title={article.title}
+          publishedAtLabel={article.published_at ? formatJST(article.published_at) : null}
+          articleUrl={article.source_url ?? null}
+          pdfUrl={pdfUrl}
+        />
 
         {/* Summary */}
         {article.summary && (

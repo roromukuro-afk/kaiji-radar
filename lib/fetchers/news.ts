@@ -24,7 +24,7 @@ export interface NewsItem {
   summary: string | null;
   isOverseas: boolean;
   isPaywalled: boolean;
-  sourceType: "jp_news" | "en_news" | "official";
+  sourceType: "jp_news" | "en_news" | "official" | "pr_times";
 }
 
 // ============================
@@ -128,7 +128,7 @@ export async function fetchPRTimes(
         summary: item.contentSnippet ?? null,
         isOverseas: false,
         isPaywalled: false,
-        sourceType: "official",
+        sourceType: "pr_times",
       });
     }
     return results;

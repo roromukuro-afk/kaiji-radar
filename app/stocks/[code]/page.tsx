@@ -3,13 +3,15 @@ import { notFound, redirect } from "next/navigation";
 import { formatJST, formatRelative, sourceTypeLabel, sourceTypeColor } from "@/lib/utils";
 import Link from "next/link";
 
-type TabKey = "all" | "tdnet" | "edinet" | "official" | "jp_news" | "en_news" | "uncertain" | "excluded";
+type TabKey = "all" | "important" | "tdnet" | "edinet" | "official" | "pr_times" | "jp_news" | "en_news" | "uncertain" | "excluded";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "all",      label: "すべて" },
+  { key: "important", label: "★重要" },
   { key: "tdnet",    label: "TDnet" },
   { key: "edinet",   label: "EDINET" },
   { key: "official", label: "公式" },
+  { key: "pr_times", label: "PR TIMES" },
   { key: "jp_news",  label: "国内" },
   { key: "en_news",  label: "海外" },
   { key: "uncertain", label: "関連不確実" },
@@ -53,7 +55,7 @@ export default async function StockPage({
   // ── Count query: full stats across all articles for this stock ──
   const { data: allArticleData } = await supabase
     .from("articles")
-    .select(`id, source_type, is_read, relevance, article_stocks!inner(stock_id)`)
+    .select(`id, source_type, is_read, relevance, is_important, article_stocks!inner(stock_id)`)
     .eq("article_stocks.stock_id", stock.id)
     .limit(2000);
 
@@ -65,6 +67,7 @@ export default async function StockPage({
   const jpCount      = allArticles.filter((a) => a.source_type === "jp_news").length;
   const enCount      = allArticles.filter((a) => a.source_type === "en_news").length;
   const uncertainCount = allArticles.filter((a) => a.relevance === "uncertain").length;
+  const importantCount = allArticles.filter((a) => a.is_important).length;
 
   // ── Filtered article list query ──
   type ArticleRow = {
@@ -76,6 +79,7 @@ export default async function StockPage({
     published_at: string | null;
     is_read: boolean;
     is_pdf: boolean;
+    is_important: boolean;
     relevance: string | null;
     is_overseas: boolean;
     article_stocks: { stock_id: string }[];
@@ -84,7 +88,7 @@ export default async function StockPage({
   let filteredQuery = supabase
     .from("articles")
     .select(`
-      id, source_type, title, title_ja, publisher, published_at, is_read, is_pdf, relevance, is_overseas,
+      id, source_type, title, title_ja, publisher, published_at, is_read, is_pdf, is_important, relevance, is_overseas,
       article_stocks!inner (stock_id)
     `)
     .eq("article_stocks.stock_id", stock.id)
@@ -96,8 +100,10 @@ export default async function StockPage({
   else if (tab === "jp_news")  filteredQuery = filteredQuery.eq("source_type", "jp_news");
   else if (tab === "en_news")  filteredQuery = filteredQuery.eq("source_type", "en_news");
   else if (tab === "official") filteredQuery = filteredQuery.eq("source_type", "official");
+  else if (tab === "pr_times") filteredQuery = filteredQuery.eq("source_type", "pr_times");
   else if (tab === "uncertain") filteredQuery = filteredQuery.eq("relevance", "uncertain");
   else if (tab === "excluded")  filteredQuery = filteredQuery.eq("relevance", "irrelevant");
+  else if (tab === "important") filteredQuery = filteredQuery.eq("is_important", true);
 
   const { data: articles } = await filteredQuery;
   const filteredArticles = (articles ?? []) as ArticleRow[];
@@ -163,10 +169,11 @@ export default async function StockPage({
         </div>
 
         {/* ── Stats grid ── */}
-        <div className="grid grid-cols-3 gap-2 sm:grid-cols-7">
+        <div className="grid grid-cols-4 gap-2 sm:grid-cols-8">
           {[
             { label: "全記事",     value: totalCount },
             { label: "未読",       value: unreadCount },
+            { label: "★重要",     value: importantCount },
             { label: "TDnet",      value: tdnetCount },
             { label: "EDINET",     value: edinetCount },
             { label: "国内",       value: jpCount },
@@ -226,6 +233,11 @@ export default async function StockPage({
                     <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${sourceTypeColor(a.source_type)}`}>
                       {sourceTypeLabel(a.source_type)}
                     </span>
+                    {a.is_important && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400 font-semibold border border-red-200 dark:border-red-800">
+                        ★重要
+                      </span>
+                    )}
                     {a.is_pdf && (
                       <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
                         PDF

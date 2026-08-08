@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS articles (
 
   -- ソース種別
   source_type TEXT NOT NULL
-    CHECK (source_type IN ('tdnet', 'edinet', 'official', 'jp_news', 'en_news')),
+    CHECK (source_type IN ('tdnet', 'edinet', 'official', 'pr_times', 'jp_news', 'en_news')),
   source_url TEXT NOT NULL,
 
   -- TDnet固有
