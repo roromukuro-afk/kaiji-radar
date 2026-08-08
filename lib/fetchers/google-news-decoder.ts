@@ -15,6 +15,7 @@
  */
 
 import { parse as parseHtml } from "node-html-parser";
+import { isGoogleNewsCircuitOpen, recordGoogleNewsFailure, recordGoogleNewsSuccess } from "./news.js";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
@@ -137,11 +138,21 @@ async function decodeViaBatchExecute(
  * 解決できない場合(非Google Newsリンク・タイムアウト・仕様変更等)は null。
  */
 export async function resolveGoogleNewsUrl(googleNewsUrl: string): Promise<string | null> {
+  // Google News検索自体が連続失敗中(レート制限/一時ブロック)なら、
+  // この解決処理もどうせ失敗する可能性が高いのでスキップして時間を浪費しない。
+  if (isGoogleNewsCircuitOpen()) return null;
+
   const articleId = extractArticleId(googleNewsUrl);
   if (!articleId) return null;
 
   const params = await fetchDecodingParams(articleId);
-  if (!params) return null;
+  if (!params) {
+    recordGoogleNewsFailure();
+    return null;
+  }
 
-  return decodeViaBatchExecute(params.signature, params.timestamp, articleId);
+  const decoded = await decodeViaBatchExecute(params.signature, params.timestamp, articleId);
+  if (decoded) recordGoogleNewsSuccess();
+  else recordGoogleNewsFailure();
+  return decoded;
 }

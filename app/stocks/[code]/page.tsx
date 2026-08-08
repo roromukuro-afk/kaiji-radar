@@ -1,7 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { notFound, redirect } from "next/navigation";
 import { formatJST, formatRelative, sourceTypeLabel, sourceTypeColor } from "@/lib/utils";
+import { eventTypeLabel } from "@/lib/classifiers/event-type";
 import Link from "next/link";
+import { NotifyEventTypesSettings } from "./NotifyEventTypesSettings";
 
 type TabKey = "all" | "important" | "tdnet" | "edinet" | "official" | "pr_times" | "jp_news" | "en_news" | "uncertain" | "excluded";
 
@@ -50,6 +52,7 @@ export default async function StockPage({
     ir_url: string | null;
     jp_keywords: string[] | null;
     en_keywords: string[] | null;
+    notify_event_types: string[] | null;
   } | null;
 
   // ── Count query: full stats across all articles for this stock ──
@@ -80,6 +83,7 @@ export default async function StockPage({
     is_read: boolean;
     is_pdf: boolean;
     is_important: boolean;
+    event_type: string | null;
     relevance: string | null;
     is_overseas: boolean;
     article_stocks: { stock_id: string }[];
@@ -88,7 +92,7 @@ export default async function StockPage({
   let filteredQuery = supabase
     .from("articles")
     .select(`
-      id, source_type, title, title_ja, publisher, published_at, is_read, is_pdf, is_important, relevance, is_overseas,
+      id, source_type, title, title_ja, publisher, published_at, is_read, is_pdf, is_important, event_type, relevance, is_overseas,
       article_stocks!inner (stock_id)
     `)
     .eq("article_stocks.stock_id", stock.id)
@@ -243,6 +247,11 @@ export default async function StockPage({
                         PDF
                       </span>
                     )}
+                    {a.event_type && a.event_type !== "other" && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
+                        {eventTypeLabel(a.event_type)}
+                      </span>
+                    )}
                     {a.relevance === "uncertain" && (
                       <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200">
                         関連不確実
@@ -348,6 +357,12 @@ export default async function StockPage({
             </div>
           </section>
         )}
+
+        {/* ── Notification settings ── */}
+        <NotifyEventTypesSettings
+          stockId={stock.id}
+          initialTypes={profile?.notify_event_types ?? null}
+        />
       </main>
     </div>
   );

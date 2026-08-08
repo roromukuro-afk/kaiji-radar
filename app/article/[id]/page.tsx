@@ -5,6 +5,7 @@ import Link from "next/link";
 import { FeedbackPanel } from "./FeedbackPanel";
 import { NoiseReportPanel } from "./NoiseReportPanel";
 import { ShareToChatGptButton } from "./ShareToChatGptButton";
+import { UpdateHistoryPanel } from "./UpdateHistoryPanel";
 
 type Stock = { id: string; code: string; name: string };
 
@@ -53,6 +54,19 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
     (article.article_stocks as { stock_id: string; stocks: Stock | null }[] | null)
       ?.map((as) => as.stocks)
       .filter((s): s is Stock => s !== null) ?? [];
+
+  // 訂正・更新履歴
+  const { data: updates } = await supabase
+    .from("article_updates")
+    .select("id, previous_title, new_title, change_type, detected_at")
+    .eq("article_id", id)
+    .order("detected_at", { ascending: true });
+
+  const { data: pdfVersions } = await supabase
+    .from("pdf_documents")
+    .select("id, file_hash, file_size_bytes, extraction_method, fetched_at")
+    .eq("article_id", id)
+    .order("fetched_at", { ascending: false });
 
   return (
     <div className="min-h-screen bg-white dark:bg-zinc-950">
@@ -131,6 +145,14 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
             <p className="text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">{article.summary}</p>
           </div>
         )}
+
+        {/* 訂正・更新履歴 */}
+        <UpdateHistoryPanel
+          originalTitle={article.title}
+          originalCreatedAt={article.created_at}
+          updates={updates ?? []}
+          pdfs={pdfVersions ?? []}
+        />
 
         {/* Feedback panel — one per linked stock */}
         {stocks.length > 0 && (

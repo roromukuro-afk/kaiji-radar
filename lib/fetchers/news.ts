@@ -30,6 +30,33 @@ export interface NewsItem {
 // ============================
 // Google News RSS
 // ============================
+//
+// サーキットブレーカー: Googleがレート制限/一時ブロック(HTTP 503等)を
+// 始めると、以降のリクエストも軒並み失敗し続け、29銘柄×キーワード分を
+// 律儀にリトライして25分のジョブタイムアウトを浪費してしまう。
+// 連続失敗が閾値を超えたら、このプロセス実行中は以降のGoogle News取得を
+// スキップして早期に諦める(次回実行時はリセットされる)。
+const CIRCUIT_BREAKER_THRESHOLD = 5;
+let consecutiveFailures = 0;
+let circuitOpenLogged = false;
+
+function isCircuitOpen(): boolean {
+  return consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD;
+}
+
+// google-news-decoder.ts からも参照する(Googleにブロックされている間は
+// リダイレクト解決の試行自体が無駄になるため)
+export function isGoogleNewsCircuitOpen(): boolean {
+  return isCircuitOpen();
+}
+
+export function recordGoogleNewsFailure(): void {
+  consecutiveFailures++;
+}
+
+export function recordGoogleNewsSuccess(): void {
+  consecutiveFailures = 0;
+}
 
 export async function fetchGoogleNewsJP(
   keywords: string[],
@@ -37,10 +64,18 @@ export async function fetchGoogleNewsJP(
 ): Promise<NewsItem[]> {
   const results: NewsItem[] = [];
   for (const kw of keywords) {
+    if (isCircuitOpen()) {
+      if (!circuitOpenLogged) {
+        console.error(`[News] Google News連続失敗が${CIRCUIT_BREAKER_THRESHOLD}回に達したため、今回の実行では以降のGoogle News取得をスキップします`);
+        circuitOpenLogged = true;
+      }
+      break;
+    }
     const q = encodeURIComponent(kw);
     const url = `https://news.google.com/rss/search?q=${q}&hl=ja&gl=JP&ceid=JP:ja`;
     try {
       const feed = await rssParser.parseURL(url);
+      consecutiveFailures = 0;
       for (const item of feed.items ?? []) {
         const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
         if (since && pubDate <= since) continue;
@@ -59,6 +94,7 @@ export async function fetchGoogleNewsJP(
         });
       }
     } catch (err) {
+      consecutiveFailures++;
       console.error(`[News] Google JP RSS 失敗 "${kw}":`, err);
     }
     await new Promise((r) => setTimeout(r, 300));
@@ -72,10 +108,18 @@ export async function fetchGoogleNewsEN(
 ): Promise<NewsItem[]> {
   const results: NewsItem[] = [];
   for (const kw of keywords) {
+    if (isCircuitOpen()) {
+      if (!circuitOpenLogged) {
+        console.error(`[News] Google News連続失敗が${CIRCUIT_BREAKER_THRESHOLD}回に達したため、今回の実行では以降のGoogle News取得をスキップします`);
+        circuitOpenLogged = true;
+      }
+      break;
+    }
     const q = encodeURIComponent(kw);
     const url = `https://news.google.com/rss/search?q=${q}&hl=en-US&gl=US&ceid=US:en`;
     try {
       const feed = await rssParser.parseURL(url);
+      consecutiveFailures = 0;
       for (const item of feed.items ?? []) {
         const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
         if (since && pubDate <= since) continue;
@@ -94,6 +138,7 @@ export async function fetchGoogleNewsEN(
         });
       }
     } catch (err) {
+      consecutiveFailures++;
       console.error(`[News] Google EN RSS 失敗 "${kw}":`, err);
     }
     await new Promise((r) => setTimeout(r, 300));

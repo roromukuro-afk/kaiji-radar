@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS stock_profiles (
   jp_keywords JSONB NOT NULL DEFAULT '[]',
   en_keywords JSONB NOT NULL DEFAULT '[]',
   source_urls JSONB NOT NULL DEFAULT '[]',  -- 情報根拠URL
+  notify_event_types JSONB,  -- 通知する開示種別リスト (null = 全種別を通知)
   last_checked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -85,6 +86,8 @@ CREATE TABLE IF NOT EXISTS articles (
   source_type TEXT NOT NULL
     CHECK (source_type IN ('tdnet', 'edinet', 'official', 'pr_times', 'jp_news', 'en_news')),
   source_url TEXT NOT NULL,
+  discovered_url TEXT,   -- RSS等で最初に見つかった生のリンク(Google Newsのリダイレクトリンク等)
+  canonical_url TEXT,    -- トラッキングパラメータ等を除去した正規化URL(重複判定用)
 
   -- TDnet固有
   tdnet_doc_id TEXT,
@@ -117,6 +120,13 @@ CREATE TABLE IF NOT EXISTS articles (
   is_overseas BOOLEAN NOT NULL DEFAULT FALSE,
   is_pdf BOOLEAN NOT NULL DEFAULT FALSE,
   doc_type TEXT,
+  is_important BOOLEAN NOT NULL DEFAULT FALSE,  -- TDnet/EDINET/公式、または重要開示キーワード一致(客観分類、投資判断ではない)
+  event_type TEXT
+    CHECK (event_type IN (
+      'earnings','guidance_revision','dividend','treasury_stock',
+      'ma_tob','alliance','personnel','agm','legal_regulatory',
+      'product_service','other'
+    )),  -- 機械的な開示種別分類(要約ではない)
 
   -- PDF
   pdf_document_id UUID,

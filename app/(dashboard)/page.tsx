@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { formatRelative, sourceTypeLabel, sourceTypeColor, truncate } from "@/lib/utils";
+import { EVENT_TYPES, eventTypeLabel } from "@/lib/classifiers/event-type";
 import Link from "next/link";
 import { PushNotificationButton } from "@/components/PushNotificationButton";
 
@@ -20,6 +21,7 @@ type Article = {
   is_update: boolean;
   is_pdf: boolean;
   is_important: boolean;
+  event_type: string | null;
   relevance: string;
   user_relevance: string | null;
   exclusion_candidate: boolean | null;
@@ -45,6 +47,7 @@ type Filter = {
   isPaywalled: boolean;
   isUpdate: boolean;
   isImportant: boolean;
+  eventType: string;
   dateRange: DateRange;
   q: string;
 };
@@ -57,6 +60,7 @@ const INITIAL_FILTER: Filter = {
   isPaywalled: false,
   isUpdate: false,
   isImportant: false,
+  eventType: "",
   dateRange: "all",
   q: "",
 };
@@ -79,6 +83,7 @@ function buildFilterParams(filter: Filter): URLSearchParams {
   if (filter.isPaywalled) params.set("is_paywalled", "true");
   if (filter.isUpdate) params.set("is_update", "true");
   if (filter.isImportant) params.set("is_important", "true");
+  if (filter.eventType) params.set("event_type", filter.eventType);
   if (filter.q) params.set("q", filter.q);
   const after = getPublishedAfter(filter.dateRange);
   if (after) params.set("published_after", after);
@@ -94,6 +99,7 @@ function countActiveFilters(f: Filter): number {
   if (f.isPaywalled) n++;
   if (f.isUpdate) n++;
   if (f.isImportant) n++;
+  if (f.eventType) n++;
   if (f.dateRange !== "all") n++;
   if (f.q) n++;
   return n;
@@ -269,6 +275,17 @@ export default function FeedPage() {
               <option value="">全ソース</option>
               {SOURCE_TYPES.map((t) => (
                 <option key={t} value={t}>{sourceTypeLabel(t)}</option>
+              ))}
+            </select>
+
+            <select
+              value={filter.eventType}
+              onChange={(e) => setFilter((f) => ({ ...f, eventType: e.target.value }))}
+              className="flex-1 min-w-0 px-2 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 text-sm"
+            >
+              <option value="">全種別</option>
+              {EVENT_TYPES.map((t) => (
+                <option key={t} value={t}>{eventTypeLabel(t)}</option>
               ))}
             </select>
           </div>
@@ -455,6 +472,11 @@ function ArticleCard({ article: a, onRead }: { article: Article; onRead: () => v
             <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${sourceTypeColor(a.source_type)}`}>
               {sourceTypeLabel(a.source_type)}
             </span>
+            {a.event_type && a.event_type !== "other" && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
+                {eventTypeLabel(a.event_type)}
+              </span>
+            )}
             {stocks.slice(0, 3).map((s) => (
               <span key={s.id} className="text-xs px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300">
                 {s.code} {s.name}

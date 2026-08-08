@@ -18,6 +18,7 @@ function applyListFilters(
   const isPaywalled = searchParams.get("is_paywalled");
   const isUpdate = searchParams.get("is_update");
   const isImportant = searchParams.get("is_important");
+  const eventType = searchParams.get("event_type");
   const publishedAfter = searchParams.get("published_after");
 
   if (stockId) query = query.eq("article_stocks.stock_id", stockId);
@@ -31,6 +32,7 @@ function applyListFilters(
   if (isPaywalled === "true") query = query.eq("is_paywalled", true);
   if (isUpdate === "true") query = query.eq("is_update", true);
   if (isImportant === "true") query = query.eq("is_important", true);
+  if (eventType) query = query.eq("event_type", eventType);
   if (publishedAfter) query = query.gte("published_at", publishedAfter);
   if (searchParams.get("exclude_irrelevant") === "true") query = query.neq("relevance", "irrelevant");
   if (search) {
@@ -65,7 +67,7 @@ export async function GET(request: Request) {
       published_at, fetched_at, summary, is_paywalled, is_overseas,
       is_read, is_update, is_pdf, doc_type, relevance, notification_sent,
       notification_failed_count, created_at, user_relevance, exclusion_candidate,
-      is_important,
+      is_important, event_type,
       article_stocks!inner (stock_id, stocks!inner (id, code, name))
     `, { count: "exact" })
     .order("published_at", { ascending: false })

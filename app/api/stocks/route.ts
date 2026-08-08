@@ -62,7 +62,18 @@ export async function PATCH(request: Request) {
   let updateData: Record<string, any> = {};
   let logAction = "";
 
-  if (action === "pause") {
+  if (action === "update_notify_event_types") {
+    const { notify_event_types } = body;
+    if (notify_event_types !== null && !Array.isArray(notify_event_types)) {
+      return NextResponse.json({ error: "notify_event_types must be an array or null" }, { status: 400 });
+    }
+    const { error } = await supabase
+      .from("stock_profiles")
+      .update({ notify_event_types })
+      .eq("stock_id", id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  } else if (action === "pause") {
     updateData = { status: "paused" };
     logAction = "pause_stock";
   } else if (action === "resume") {

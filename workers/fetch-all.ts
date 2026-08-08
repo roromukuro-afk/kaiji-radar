@@ -31,6 +31,7 @@ import {
 } from "../lib/fetchers/news.js";
 import { isGoogleNewsUrl, resolveGoogleNewsUrl } from "../lib/fetchers/google-news-decoder.js";
 import { canonicalizeUrl } from "../lib/utils.js";
+import { classifyEventType, type EventType } from "../lib/classifiers/event-type.js";
 import {
   checkRelevance,
   translateTitleJa,
@@ -61,6 +62,7 @@ interface StockProfile {
   official_url: string | null;
   ir_url: string | null;
   press_release_url: string | null;
+  notify_event_types: string[] | null;
 }
 
 interface StockRecord {
@@ -108,7 +110,7 @@ async function main() {
     .from("stocks")
     .select(`
       id, code, name, name_en, edinet_code, sec_code,
-      stock_profiles (rss_urls, jp_keywords, en_keywords, official_url, ir_url, press_release_url)
+      stock_profiles (rss_urls, jp_keywords, en_keywords, official_url, ir_url, press_release_url, notify_event_types)
     `)
     .eq("status", "active");
 
@@ -352,6 +354,9 @@ async function main() {
         src.tdnet.skipped++;
       } else if (r.outcome === "updated") {
         src.tdnet.updated++;
+        // 訂正等で内容が変わった場合、新しいPDFスナップショットも保存する
+        // (過去版は残したまま、articles.pdf_document_id だけ最新版に差し替わる)
+        if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "tdnet", r.article_id);
       } else {
         src.tdnet.errors++;
       }
@@ -446,7 +451,9 @@ async function main() {
           if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "edinet", r.article.id);
           await notifyArticle(r.article, stock);
         } else if (r.outcome === "duplicate") { src.edinet.skipped++;
-        } else if (r.outcome === "updated")   { src.edinet.updated++;
+        } else if (r.outcome === "updated")   {
+          src.edinet.updated++;
+          if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "edinet", r.article_id);
         } else                                { src.edinet.errors++; }
       }
       await sleep(1000);
@@ -707,7 +714,7 @@ type ArticleData = { id: string; [key: string]: any };
 type SaveResult =
   | { outcome: "new"; article: ArticleData }
   | { outcome: "duplicate" }
-  | { outcome: "updated" }
+  | { outcome: "updated"; article_id: string }
   | { outcome: "error" };
 
 async function saveArticle(params: {
@@ -741,9 +748,12 @@ async function saveArticle(params: {
   );
 
   if (existingInfo) {
-    // Detect updates: title change indicates a correction/update
+    // タイトルが実際に変わった場合のみ「更新」として記録する。
+    // (以前は同一URLの再取得ならタイトルが同じでも一律「更新」扱いにしており、
+    //  news/RSSの毎時再取得のたびにpreviouson_title=new_titleの空の更新履歴が
+    //  大量に作られていた)
     const titleChanged = existingInfo.title !== params.title;
-    if (titleChanged || existingInfo.is_update_candidate) {
+    if (titleChanged) {
       await supabase.from("article_updates").insert({
         article_id: existingInfo.id,
         previous_title: existingInfo.title,
@@ -753,7 +763,7 @@ async function saveArticle(params: {
       await supabase.from("articles")
         .update({ is_update: true, updated_at: new Date().toISOString() })
         .eq("id", existingInfo.id);
-      return { outcome: "updated" };
+      return { outcome: "updated", article_id: existingInfo.id };
     }
     return { outcome: "duplicate" };
   }
@@ -792,10 +802,18 @@ async function saveArticle(params: {
     isSafeSource(params.source_type) ||
     matchesProtection(params.title, params.summary) !== null;
 
+  // 開示種別の機械的分類(要約・投資判断ではなく情報整理)
+  insertPayload.event_type = classifyEventType({
+    title: params.title,
+    summary: params.summary,
+    tdnetDocType: params.doc_type,
+    edinetDocTypeCode: params.edinet_doc_type_code,
+  });
+
   const { data: article, error } = await supabase
     .from("articles")
     .insert(insertPayload)
-    .select("id, source_type, title, title_ja, publisher, published_at, summary, relevance, is_overseas, source_url, exclusion_candidate")
+    .select("id, source_type, title, title_ja, publisher, published_at, summary, relevance, is_overseas, source_url, exclusion_candidate, event_type")
     .single();
 
   if (error || !article) {
@@ -869,6 +887,13 @@ async function notifyArticle(
     article.exclusion_candidate === true
   ) {
     console.log(`[fetch-all] 通知スキップ (除外): ${article.id} title="${article.title?.slice(0, 40)}"`);
+    return;
+  }
+
+  // 銘柄別の通知種別設定 (未設定 = 全種別を通知、現状の挙動を維持)
+  const notifyTypes = stock.stock_profiles?.notify_event_types;
+  if (notifyTypes && notifyTypes.length > 0 && !notifyTypes.includes(article.event_type)) {
+    console.log(`[fetch-all] 通知スキップ (種別設定): ${article.id} event_type=${article.event_type}`);
     return;
   }
 
