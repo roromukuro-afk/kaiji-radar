@@ -29,6 +29,8 @@ import {
   fetchGenericRss,
   detectPaywall,
 } from "../lib/fetchers/news.js";
+import { isGoogleNewsUrl, resolveGoogleNewsUrl } from "../lib/fetchers/google-news-decoder.js";
+import { canonicalizeUrl } from "../lib/utils.js";
 import {
   checkRelevance,
   translateTitleJa,
@@ -482,7 +484,6 @@ async function main() {
 
       for (const item of [...newsItems, ...prItems, ...customItems]) {
         src.jp_news.candidates++;
-        const isPaywall = detectPaywall(item.url);
         const existing = await findExistingArticle(item.url);
         if (existing) { src.jp_news.skipped++; continue; }
 
@@ -509,17 +510,27 @@ async function main() {
           continue;
         }
 
+        // Google Newsのリダイレクトリンクは配信元ドメインが分からずノイズ/有料判定が
+        // 効かないため、保存が確定した記事だけ実URLへ解決する(全候補で行うと遅すぎる)。
+        let resolvedUrl = item.url;
+        let discoveredUrl: string | undefined;
+        if (isGoogleNewsUrl(item.url)) {
+          const real = await resolveGoogleNewsUrl(item.url);
+          if (real) { resolvedUrl = real; discoveredUrl = item.url; }
+        }
+
         // Check user-defined exclusion rules (applied after relevance; certain/uncertain articles)
-        const excl = applyExclusionRules(item.sourceType, item.title, item.summary, item.url, item.publisher, stock.id);
+        const excl = applyExclusionRules(item.sourceType, item.title, item.summary, resolvedUrl, item.publisher, stock.id);
 
         const r = await saveArticle({
           source_type: item.sourceType,
-          source_url: item.url,
+          source_url: resolvedUrl,
+          discovered_url: discoveredUrl,
           title: item.title,
           publisher: item.publisher,
           published_at: item.publishedAt.toISOString(),
           summary: item.summary,
-          is_paywalled: isPaywall,
+          is_paywalled: detectPaywall(resolvedUrl),
           stock,
           relevance,
           relevance_reason: relevanceReason,
@@ -588,18 +599,26 @@ async function main() {
 
         try { titleJa = await translateTitleJa(item.title); } catch { titleJa = null; }
 
-        const enExcl = applyExclusionRules("en_news", item.title, item.summary, item.url, item.publisher, stock.id);
+        let resolvedUrl = item.url;
+        let discoveredUrl: string | undefined;
+        if (isGoogleNewsUrl(item.url)) {
+          const real = await resolveGoogleNewsUrl(item.url);
+          if (real) { resolvedUrl = real; discoveredUrl = item.url; }
+        }
+
+        const enExcl = applyExclusionRules("en_news", item.title, item.summary, resolvedUrl, item.publisher, stock.id);
 
         const r = await saveArticle({
           source_type: "en_news",
-          source_url: item.url,
+          source_url: resolvedUrl,
+          discovered_url: discoveredUrl,
           title: item.title,
           title_ja: titleJa,
           publisher: item.publisher,
           published_at: item.publishedAt.toISOString(),
           summary: item.summary,
           is_overseas: true,
-          is_paywalled: detectPaywall(item.url),
+          is_paywalled: detectPaywall(resolvedUrl),
           stock,
           relevance,
           relevance_reason: relevanceReason,
@@ -694,6 +713,7 @@ type SaveResult =
 async function saveArticle(params: {
   source_type: string;
   source_url: string;
+  discovered_url?: string;
   tdnet_doc_id?: string;
   edinet_doc_id?: string;
   edinet_submitter_code?: string;
@@ -713,9 +733,11 @@ async function saveArticle(params: {
   exclusion_candidate?: boolean;
   exclusion_reason?: string | null;
 }): Promise<SaveResult> {
-  // Check for existing article with same doc ID or URL
+  const canonicalUrl = canonicalizeUrl(params.source_url);
+
+  // Check for existing article with same doc ID / canonical URL / URL
   const existingInfo = await findExistingArticle(
-    params.source_url, params.tdnet_doc_id, params.edinet_doc_id
+    params.source_url, params.tdnet_doc_id, params.edinet_doc_id, canonicalUrl
   );
 
   if (existingInfo) {
@@ -740,6 +762,8 @@ async function saveArticle(params: {
   const insertPayload: Record<string, unknown> = {
     source_type: params.source_type,
     source_url: params.source_url,
+    discovered_url: params.discovered_url,
+    canonical_url: canonicalUrl,
     tdnet_doc_id: params.tdnet_doc_id,
     edinet_doc_id: params.edinet_doc_id,
     edinet_submitter_code: params.edinet_submitter_code,
@@ -794,7 +818,8 @@ async function saveArticle(params: {
 async function findExistingArticle(
   url: string,
   tdnetDocId?: string,
-  edinetDocId?: string
+  edinetDocId?: string,
+  canonicalUrl?: string
 ): Promise<{ id: string; title: string; is_update_candidate: boolean } | null> {
   // Check by TDnet doc ID first (most reliable)
   if (tdnetDocId) {
@@ -812,6 +837,16 @@ async function findExistingArticle(
       .eq("edinet_doc_id", edinetDocId)
       .single();
     if (data) return { ...data, is_update_candidate: false };
+  }
+  // Google Newsが同じ記事に別トークンのリンクを発行するケースに対応
+  // (canonical_url は正規化済みのため source_url の表記ゆれよりも確実に一致する)
+  if (canonicalUrl) {
+    const { data } = await supabase
+      .from("articles")
+      .select("id, title")
+      .eq("canonical_url", canonicalUrl)
+      .single();
+    if (data) return { ...data, is_update_candidate: true };
   }
   // Check by URL (may indicate a content update)
   const { data } = await supabase

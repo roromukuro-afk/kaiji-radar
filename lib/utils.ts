@@ -51,6 +51,24 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// トラッキングパラメータ等を除去してURLを正規化する。
+// 同じ記事がパラメータ違い・Google Newsのトークン違い等で重複保存されるのを防ぐための重複判定キー。
+const TRACKING_PARAMS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "oc", "ref", "fbclid", "gclid"];
+
+export function canonicalizeUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const p of TRACKING_PARAMS) u.searchParams.delete(p);
+    u.searchParams.sort();
+    const host = u.hostname.toLowerCase().replace(/^www\./, "");
+    const path = u.pathname.replace(/\/+$/, "");
+    const query = u.searchParams.toString();
+    return `${host}${path}${query ? "?" + query : ""}`;
+  } catch {
+    return url;
+  }
+}
+
 export function toJSTISOString(date: Date): string {
   const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
   return jst.toISOString().replace("Z", "+09:00");
