@@ -70,6 +70,21 @@ function getPublishedAfter(range: DateRange): string | null {
   return now.toISOString();
 }
 
+// GETの一覧取得とPATCHの一括既読で同じ条件を使い回す(is_readは呼び出し側で設定する)
+function buildFilterParams(filter: Filter): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filter.stockId) params.set("stock_id", filter.stockId);
+  if (filter.sourceType) params.set("source_type", filter.sourceType);
+  if (filter.relevance) params.set("relevance", filter.relevance);
+  if (filter.isPaywalled) params.set("is_paywalled", "true");
+  if (filter.isUpdate) params.set("is_update", "true");
+  if (filter.isImportant) params.set("is_important", "true");
+  if (filter.q) params.set("q", filter.q);
+  const after = getPublishedAfter(filter.dateRange);
+  if (after) params.set("published_after", after);
+  return params;
+}
+
 function countActiveFilters(f: Filter): number {
   let n = 0;
   if (f.stockId) n++;
@@ -106,17 +121,10 @@ export default function FeedPage() {
 
   const fetchArticles = useCallback(async (newOffset = 0) => {
     setLoading(true);
-    const params = new URLSearchParams({ limit: String(LIMIT), offset: String(newOffset) });
-    if (filter.stockId) params.set("stock_id", filter.stockId);
-    if (filter.sourceType) params.set("source_type", filter.sourceType);
+    const params = buildFilterParams(filter);
+    params.set("limit", String(LIMIT));
+    params.set("offset", String(newOffset));
     if (filter.isRead !== "") params.set("is_read", filter.isRead);
-    if (filter.relevance) params.set("relevance", filter.relevance);
-    if (filter.isPaywalled) params.set("is_paywalled", "true");
-    if (filter.isUpdate) params.set("is_update", "true");
-    if (filter.isImportant) params.set("is_important", "true");
-    if (filter.q) params.set("q", filter.q);
-    const after = getPublishedAfter(filter.dateRange);
-    if (after) params.set("published_after", after);
 
     const res = await fetch(`/api/articles?${params}`);
     const json = await res.json();
@@ -139,15 +147,34 @@ export default function FeedPage() {
       .then(({ count }) => setUnreadCount(count ?? 0));
   }, [articles]);
 
+  const [markingAllRead, setMarkingAllRead] = useState(false);
+
   async function markAllRead() {
-    const ids = articles.filter((a) => !a.is_read).map((a) => a.id);
-    if (!ids.length) return;
-    await fetch("/api/articles", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids, is_read: true }),
-    });
-    fetchArticles(0);
+    setMarkingAllRead(true);
+    try {
+      const params = buildFilterParams(filter);
+      params.set("is_read", "false");
+      params.set("limit", "1");
+
+      const countRes = await fetch(`/api/articles?${params}`);
+      const countJson = await countRes.json();
+      const targetCount: number = countJson.count ?? 0;
+
+      if (targetCount === 0) {
+        alert("対象の未読記事はありません");
+        return;
+      }
+      if (!confirm(`${targetCount}件を既読にします。よろしいですか？`)) return;
+
+      await fetch(`/api/articles?${params}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mark_all_read: true }),
+      });
+      fetchArticles(0);
+    } finally {
+      setMarkingAllRead(false);
+    }
   }
 
   async function handleManualFetch() {
@@ -338,9 +365,10 @@ export default function FeedPage() {
           {unreadCount > 0 && (
             <button
               onClick={markAllRead}
-              className="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 whitespace-nowrap"
+              disabled={markingAllRead}
+              className="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 whitespace-nowrap disabled:opacity-50"
             >
-              全て既読
+              {activeCount > 0 ? "検索結果を既読" : "全記事を既読"}
             </button>
           )}
         </div>
@@ -355,9 +383,10 @@ export default function FeedPage() {
           {filterOpen && unreadCount > 0 && (
             <button
               onClick={markAllRead}
-              className="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800"
+              disabled={markingAllRead}
+              className="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-50"
             >
-              全て既読
+              {activeCount > 0 ? "検索結果を既読" : "全記事を既読"}
             </button>
           )}
         </div>

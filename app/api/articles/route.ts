@@ -1,6 +1,46 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 
+// GET一覧とPATCH(mark_all_read)で同じフィルター条件を使い回すための共通処理。
+// ここがズレると「一覧に見えている条件」と「一括更新される条件」が食い違うバグになる。
+function applyListFilters(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  query: any,
+  searchParams: URLSearchParams,
+  opts: { includeIsRead?: boolean } = {}
+) {
+  const { includeIsRead = true } = opts;
+  const stockId = searchParams.get("stock_id");
+  const sourceType = searchParams.get("source_type");
+  const isRead = searchParams.get("is_read");
+  const relevance = searchParams.get("relevance");
+  const search = searchParams.get("q");
+  const isPaywalled = searchParams.get("is_paywalled");
+  const isUpdate = searchParams.get("is_update");
+  const isImportant = searchParams.get("is_important");
+  const publishedAfter = searchParams.get("published_after");
+
+  if (stockId) query = query.eq("article_stocks.stock_id", stockId);
+  if (sourceType) query = query.eq("source_type", sourceType);
+  if (includeIsRead && isRead !== null) query = query.eq("is_read", isRead === "true");
+  if (relevance === "irrelevant") {
+    query = query.or("user_relevance.eq.irrelevant,exclusion_candidate.eq.true");
+  } else if (relevance) {
+    query = query.eq("relevance", relevance);
+  }
+  if (isPaywalled === "true") query = query.eq("is_paywalled", true);
+  if (isUpdate === "true") query = query.eq("is_update", true);
+  if (isImportant === "true") query = query.eq("is_important", true);
+  if (publishedAfter) query = query.gte("published_at", publishedAfter);
+  if (searchParams.get("exclude_irrelevant") === "true") query = query.neq("relevance", "irrelevant");
+  if (search) {
+    query = query.or(
+      `title.ilike.%${search}%,summary.ilike.%${search}%,publisher.ilike.%${search}%`
+    );
+  }
+  return query;
+}
+
 export async function GET(request: Request) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -14,7 +54,6 @@ export async function GET(request: Request) {
   const search = searchParams.get("q");
   const isPaywalled = searchParams.get("is_paywalled");
   const isUpdate = searchParams.get("is_update");
-  const isImportant = searchParams.get("is_important");
   const publishedAfter = searchParams.get("published_after");
   const limit = parseInt(searchParams.get("limit") ?? "50");
   const offset = parseInt(searchParams.get("offset") ?? "0");
@@ -32,24 +71,7 @@ export async function GET(request: Request) {
     .order("published_at", { ascending: false })
     .range(offset, offset + limit - 1);
 
-  if (stockId) query = query.eq("article_stocks.stock_id", stockId);
-  if (sourceType) query = query.eq("source_type", sourceType);
-  if (isRead !== null) query = query.eq("is_read", isRead === "true");
-  if (relevance === "irrelevant") {
-    query = query.or("user_relevance.eq.irrelevant,exclusion_candidate.eq.true");
-  } else if (relevance) {
-    query = query.eq("relevance", relevance);
-  }
-  if (isPaywalled === "true") query = query.eq("is_paywalled", true);
-  if (isUpdate === "true") query = query.eq("is_update", true);
-  if (isImportant === "true") query = query.eq("is_important", true);
-  if (publishedAfter) query = query.gte("published_at", publishedAfter);
-  if (searchParams.get("exclude_irrelevant") === "true") query = query.neq("relevance", "irrelevant");
-  if (search) {
-    query = query.or(
-      `title.ilike.%${search}%,summary.ilike.%${search}%,publisher.ilike.%${search}%`
-    );
-  }
+  query = applyListFilters(query, searchParams);
 
   const { data, error, count } = await query;
 
@@ -96,7 +118,42 @@ export async function PATCH(request: Request) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  const { searchParams } = new URL(request.url);
   const body = await request.json();
+
+  if (body.mark_all_read === true) {
+    // 現在表示中の50件だけでなく、フィルター条件に一致する未読記事を
+    // DB側ですべて既読にする(Supabaseの1000件上限を避けるためID解決をページング)。
+    const ids = new Set<string>();
+    const PAGE = 1000;
+    for (let offset = 0; ; offset += PAGE) {
+      let idQuery = supabase
+        .from("articles")
+        .select("id, article_stocks!inner(stock_id)")
+        .eq("is_read", false)
+        .range(offset, offset + PAGE - 1);
+      idQuery = applyListFilters(idQuery, searchParams, { includeIsRead: false });
+
+      const { data, error } = await idQuery;
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      if (!data || data.length === 0) break;
+      for (const row of data as { id: string }[]) ids.add(row.id);
+      if (data.length < PAGE) break;
+    }
+
+    const idList = [...ids];
+    const CHUNK = 500;
+    for (let i = 0; i < idList.length; i += CHUNK) {
+      const { error } = await supabase
+        .from("articles")
+        .update({ is_read: true, read_at: new Date().toISOString() })
+        .in("id", idList.slice(i, i + CHUNK));
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true, updated: idList.length });
+  }
+
   const { ids, is_read } = body;
 
   if (!ids || !Array.isArray(ids)) {
