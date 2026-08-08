@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS articles (
       'ma_tob','alliance','personnel','agm','legal_regulatory',
       'product_service','other'
     )),  -- 機械的な開示種別分類(要約ではない)
+  importance TEXT DEFAULT 'normal'
+    CHECK (importance IN ('critical','important','normal')),  -- 重要度3段階(客観分類、投資判断ではない)
+  importance_reason TEXT,
+  importance_source TEXT CHECK (importance_source IN ('rule','ai','manual')),
+  importance_overridden_at TIMESTAMPTZ,
 
   -- PDF
   pdf_document_id UUID,

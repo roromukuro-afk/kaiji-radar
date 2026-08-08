@@ -32,6 +32,7 @@ import {
 import { isGoogleNewsUrl, resolveGoogleNewsUrl } from "../lib/fetchers/google-news-decoder.js";
 import { canonicalizeUrl } from "../lib/utils.js";
 import { classifyEventType, type EventType } from "../lib/classifiers/event-type.js";
+import { classifyImportance } from "../lib/classifiers/importance.js";
 import {
   checkRelevance,
   translateTitleJa,
@@ -809,6 +810,17 @@ async function saveArticle(params: {
     tdnetDocType: params.doc_type,
     edinetDocTypeCode: params.edinet_doc_type_code,
   });
+
+  // 重要度3段階分類(投資判断ではなく開示カテゴリ・規模の客観分類)
+  const importanceResult = await classifyImportance({
+    title: params.title,
+    summary: params.summary,
+    edinetDocTypeCode: params.edinet_doc_type_code,
+    isSafeSource: isSafeSource(params.source_type),
+  });
+  insertPayload.importance = importanceResult.tier;
+  insertPayload.importance_reason = importanceResult.reason;
+  insertPayload.importance_source = importanceResult.source;
 
   const { data: article, error } = await supabase
     .from("articles")

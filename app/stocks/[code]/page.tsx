@@ -84,6 +84,7 @@ export default async function StockPage({
     is_pdf: boolean;
     is_important: boolean;
     event_type: string | null;
+    importance: string | null;
     relevance: string | null;
     is_overseas: boolean;
     article_stocks: { stock_id: string }[];
@@ -92,7 +93,7 @@ export default async function StockPage({
   let filteredQuery = supabase
     .from("articles")
     .select(`
-      id, source_type, title, title_ja, publisher, published_at, is_read, is_pdf, is_important, event_type, relevance, is_overseas,
+      id, source_type, title, title_ja, publisher, published_at, is_read, is_pdf, is_important, event_type, importance, relevance, is_overseas,
       article_stocks!inner (stock_id)
     `)
     .eq("article_stocks.stock_id", stock.id)
@@ -245,6 +246,16 @@ export default async function StockPage({
                     {a.is_pdf && (
                       <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
                         PDF
+                      </span>
+                    )}
+                    {a.importance === "critical" && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 font-semibold border border-red-300 dark:border-red-700">
+                        最重要
+                      </span>
+                    )}
+                    {a.importance === "important" && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200">
+                        重要
                       </span>
                     )}
                     {a.event_type && a.event_type !== "other" && (

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { formatRelative, sourceTypeLabel, sourceTypeColor, truncate } from "@/lib/utils";
 import { EVENT_TYPES, eventTypeLabel } from "@/lib/classifiers/event-type";
+import { IMPORTANCE_TIERS, importanceLabel } from "@/lib/classifiers/importance";
 import Link from "next/link";
 import { PushNotificationButton } from "@/components/PushNotificationButton";
 
@@ -22,6 +23,7 @@ type Article = {
   is_pdf: boolean;
   is_important: boolean;
   event_type: string | null;
+  importance: string | null;
   relevance: string;
   user_relevance: string | null;
   exclusion_candidate: boolean | null;
@@ -48,6 +50,7 @@ type Filter = {
   isUpdate: boolean;
   isImportant: boolean;
   eventType: string;
+  importance: string;
   dateRange: DateRange;
   q: string;
 };
@@ -61,6 +64,7 @@ const INITIAL_FILTER: Filter = {
   isUpdate: false,
   isImportant: false,
   eventType: "",
+  importance: "",
   dateRange: "all",
   q: "",
 };
@@ -84,6 +88,7 @@ function buildFilterParams(filter: Filter): URLSearchParams {
   if (filter.isUpdate) params.set("is_update", "true");
   if (filter.isImportant) params.set("is_important", "true");
   if (filter.eventType) params.set("event_type", filter.eventType);
+  if (filter.importance) params.set("importance", filter.importance);
   if (filter.q) params.set("q", filter.q);
   const after = getPublishedAfter(filter.dateRange);
   if (after) params.set("published_after", after);
@@ -100,6 +105,7 @@ function countActiveFilters(f: Filter): number {
   if (f.isUpdate) n++;
   if (f.isImportant) n++;
   if (f.eventType) n++;
+  if (f.importance) n++;
   if (f.dateRange !== "all") n++;
   if (f.q) n++;
   return n;
@@ -288,6 +294,17 @@ export default function FeedPage() {
                 <option key={t} value={t}>{eventTypeLabel(t)}</option>
               ))}
             </select>
+
+            <select
+              value={filter.importance}
+              onChange={(e) => setFilter((f) => ({ ...f, importance: e.target.value }))}
+              className="flex-1 min-w-0 px-2 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 text-sm"
+            >
+              <option value="">全重要度</option>
+              {IMPORTANCE_TIERS.map((t) => (
+                <option key={t} value={t}>{importanceLabel(t)}</option>
+              ))}
+            </select>
           </div>
 
           {/* Row 3: read status + relevance */}
@@ -472,6 +489,16 @@ function ArticleCard({ article: a, onRead }: { article: Article; onRead: () => v
             <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${sourceTypeColor(a.source_type)}`}>
               {sourceTypeLabel(a.source_type)}
             </span>
+            {a.importance === "critical" && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 font-semibold border border-red-300 dark:border-red-700">
+                最重要
+              </span>
+            )}
+            {a.importance === "important" && (
+              <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200">
+                重要
+              </span>
+            )}
             {a.event_type && a.event_type !== "other" && (
               <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
                 {eventTypeLabel(a.event_type)}

@@ -6,6 +6,7 @@ import { FeedbackPanel } from "./FeedbackPanel";
 import { NoiseReportPanel } from "./NoiseReportPanel";
 import { ShareToChatGptButton } from "./ShareToChatGptButton";
 import { UpdateHistoryPanel } from "./UpdateHistoryPanel";
+import { ImportanceOverride } from "./ImportanceOverride";
 
 type Stock = { id: string; code: string; name: string };
 
@@ -82,6 +83,14 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
       </header>
 
       <main className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+        {/* Importance */}
+        <ImportanceOverride
+          articleId={id}
+          importance={article.importance}
+          importanceReason={article.importance_reason}
+          importanceSource={article.importance_source}
+        />
+
         {/* Badges */}
         <div className="flex flex-wrap gap-1.5">
           <span className={`text-xs px-2 py-1 rounded-lg font-medium ${sourceTypeColor(article.source_type)}`}>

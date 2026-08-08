@@ -19,6 +19,7 @@ function applyListFilters(
   const isUpdate = searchParams.get("is_update");
   const isImportant = searchParams.get("is_important");
   const eventType = searchParams.get("event_type");
+  const importance = searchParams.get("importance");
   const publishedAfter = searchParams.get("published_after");
 
   if (stockId) query = query.eq("article_stocks.stock_id", stockId);
@@ -33,6 +34,7 @@ function applyListFilters(
   if (isUpdate === "true") query = query.eq("is_update", true);
   if (isImportant === "true") query = query.eq("is_important", true);
   if (eventType) query = query.eq("event_type", eventType);
+  if (importance) query = query.eq("importance", importance);
   if (publishedAfter) query = query.gte("published_at", publishedAfter);
   if (searchParams.get("exclude_irrelevant") === "true") query = query.neq("relevance", "irrelevant");
   if (search) {
@@ -67,7 +69,7 @@ export async function GET(request: Request) {
       published_at, fetched_at, summary, is_paywalled, is_overseas,
       is_read, is_update, is_pdf, doc_type, relevance, notification_sent,
       notification_failed_count, created_at, user_relevance, exclusion_candidate,
-      is_important, event_type,
+      is_important, event_type, importance, importance_reason, importance_source,
       article_stocks!inner (stock_id, stocks!inner (id, code, name))
     `, { count: "exact" })
     .order("published_at", { ascending: false })
@@ -156,14 +158,29 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ ok: true, updated: idList.length });
   }
 
-  const { ids, is_read } = body;
+  const { ids, is_read, importance } = body;
 
   if (!ids || !Array.isArray(ids)) {
     return NextResponse.json({ error: "ids array required" }, { status: 400 });
   }
 
-  const updateData: Record<string, unknown> = { is_read };
-  if (is_read) updateData.read_at = new Date().toISOString();
+  const updateData: Record<string, unknown> = {};
+  if (is_read !== undefined) {
+    updateData.is_read = is_read;
+    if (is_read) updateData.read_at = new Date().toISOString();
+  }
+  if (importance !== undefined) {
+    if (!["critical", "important", "normal"].includes(importance)) {
+      return NextResponse.json({ error: "invalid importance value" }, { status: 400 });
+    }
+    updateData.importance = importance;
+    updateData.importance_source = "manual";
+    updateData.importance_overridden_at = new Date().toISOString();
+  }
+
+  if (Object.keys(updateData).length === 0) {
+    return NextResponse.json({ error: "no fields to update" }, { status: 400 });
+  }
 
   const { error } = await supabase
     .from("articles")
