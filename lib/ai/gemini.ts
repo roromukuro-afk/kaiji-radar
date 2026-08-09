@@ -10,7 +10,10 @@
  * https://ai.google.dev/gemini-api/docs/pricing を参照。
  */
 
-const MODEL = "gemini-2.0-flash";
+// "-latest"エイリアスを使うことで、Googleがモデルを廃止・更新しても
+// コード変更なしに追従できるようにする(gemini-2.0-flashが廃止され
+// 429/404で全滅した実際の障害を踏まえた対応)。
+const MODEL = "gemini-flash-lite-latest";
 const TIMEOUT_MS = 15000;
 
 // 無料枠のRPM(1分あたりリクエスト数)上限に収めるための最小呼び出し間隔。
@@ -50,7 +53,7 @@ async function requestOnce(prompt: string, maxOutputTokens: number, apiKey: stri
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      return { text: null, error: `HTTP ${res.status}: ${body.slice(0, 200)}`, status: res.status };
+      return { text: null, error: `HTTP ${res.status}: ${body.slice(0, 500)}`, status: res.status };
     }
 
     const json = await res.json();
