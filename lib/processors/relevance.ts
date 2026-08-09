@@ -1,22 +1,15 @@
 /**
- * AI 関連性判定 (Claude API)
+ * AI 関連性判定 (Google Gemini API・無料枠)
  *
  * 判定結果: 'certain' | 'uncertain' | 'irrelevant'
  * - 'irrelevant' のみ通知除外 (除外ログへ記録)
  * - 'uncertain' も通知する (表示に「関連不確実」を付与)
  *
- * コスト最小化のため claude-haiku-4-5 を使用。
+ * コスト最小化のためGemini Flash(無料枠)を使用。
  * 関連性判定にのみ使用し、投資判断・重要度評価は行わない。
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-
-// 遅延生成の理由は lib/classifiers/importance.ts のコメントを参照
-let client: Anthropic | null = null;
-function getClient(): Anthropic {
-  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  return client;
-}
+import { callGemini } from "../ai/gemini";
 
 export type RelevanceResult = "certain" | "uncertain" | "irrelevant";
 
@@ -53,50 +46,34 @@ export async function checkRelevance(
 
 注意: 投資判断・重要度は評価しないこと。`;
 
+  const { text, error } = await callGemini(prompt, 150);
+  if (!text) {
+    console.error("[Relevance] AI判定失敗:", error);
+    // AI失敗時は 'uncertain' として通知する (取りこぼし防止)
+    return { result: "uncertain", reason: "AI判定失敗" };
+  }
+
   try {
-    const response = await getClient().messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 150,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const text =
-      response.content[0].type === "text" ? response.content[0].text : "";
     const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
-
     if (!["certain", "uncertain", "irrelevant"].includes(parsed.result)) {
       return { result: "uncertain", reason: "判定エラー" };
     }
-
     return {
       result: parsed.result as RelevanceResult,
       reason: parsed.reason ?? "",
     };
   } catch (err) {
-    console.error("[Relevance] AI判定失敗:", err);
-    // AI失敗時は 'uncertain' として通知する (取りこぼし防止)
-    return { result: "uncertain", reason: "AI判定失敗" };
+    console.error("[Relevance] AI応答のパース失敗:", err, text);
+    return { result: "uncertain", reason: "判定エラー" };
   }
 }
 
 export async function translateTitleJa(englishTitle: string): Promise<string> {
-  try {
-    const response = await getClient().messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 100,
-      messages: [
-        {
-          role: "user",
-          content: `次の英語ニュースタイトルを日本語に簡潔に翻訳してください。翻訳文のみ回答すること:\n${englishTitle}`,
-        },
-      ],
-    });
-    return response.content[0].type === "text"
-      ? response.content[0].text.trim()
-      : englishTitle;
-  } catch {
-    return englishTitle;
-  }
+  const { text } = await callGemini(
+    `次の英語ニュースタイトルを日本語に簡潔に翻訳してください。翻訳文のみ回答すること:\n${englishTitle}`,
+    100
+  );
+  return text?.trim() || englishTitle;
 }
 
 // キーワードマッチによる高速事前フィルタ (AI不要)

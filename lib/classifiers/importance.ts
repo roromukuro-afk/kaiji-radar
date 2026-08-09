@@ -12,17 +12,7 @@
  *   3. ユーザーによる手動上書き
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-
-// 遅延生成: モジュール読み込み時ではなく実際に使う時にAPIキーを読む。
-// CLIスクリプト(loadEnvでprocess.envを後から設定する)がモジュールimport後に
-// .env.localを読み込む構成のため、モジュール直下でクライアントを作ると
-// 環境変数が未設定のまま固定されてしまう。
-let client: Anthropic | null = null;
-function getClient(): Anthropic {
-  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  return client;
-}
+import { callGemini } from "../ai/gemini";
 
 export type ImportanceTier = "critical" | "important" | "normal";
 
@@ -130,20 +120,20 @@ async function checkMagnitudeByAI(
 - "important": 相応の規模だが会社全体を揺るがすほどではないと読み取れる
 - "normal": 記載内容が軽微、または規模を判断できる記述が無い`;
 
+  const { text, error } = await callGemini(prompt, 150);
+  if (!text) {
+    console.error("[Importance] AI規模判定失敗:", error);
+    return { tier: "important", reason: baseReason };
+  }
+
   try {
-    const response = await getClient().messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 150,
-      messages: [{ role: "user", content: prompt }],
-    });
-    const text = response.content[0].type === "text" ? response.content[0].text : "";
     const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
     if (!IMPORTANCE_TIERS.includes(parsed.tier)) {
       return { tier: "important", reason: baseReason };
     }
     return { tier: parsed.tier as ImportanceTier, reason: parsed.reason ?? baseReason };
   } catch (err) {
-    console.error("[Importance] AI規模判定失敗:", err);
+    console.error("[Importance] AI応答のパース失敗:", err, text);
     return { tier: "important", reason: baseReason };
   }
 }
