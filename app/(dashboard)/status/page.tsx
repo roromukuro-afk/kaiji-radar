@@ -123,7 +123,28 @@ export default function StatusPage() {
   if (loading) return <div className="text-center py-12 text-zinc-400">読み込み中…</div>;
   if (!data) return <div className="text-center py-12 text-zinc-400">データ取得失敗</div>;
 
-  const overallOk = data.health_checks.every((h) => h.consecutive_failures < 3);
+  // hourly-fetch.ymlは毎時5分実行。3時間(通常ルックバック相当)を超えて
+  // 実行記録が無ければ、GitHub Actions自体が止まっている疑いとして扱う。
+  const STALE_THRESHOLD_MS = 3 * 60 * 60 * 1000;
+  const lastRunAt = data.last_hourly_run ? new Date(data.last_hourly_run).getTime() : null;
+  const isStale = lastRunAt === null || Date.now() - lastRunAt > STALE_THRESHOLD_MS;
+
+  // key_missing(意図的な未設定)は問題扱いしない。degraded/failedと
+  // consecutive_failures>=3は、連続失敗回数だけでは拾えない「一部劣化」も含めて反映する。
+  const degradedSources = data.health_checks.filter((h) => h.status === "degraded");
+  const failedSources = data.health_checks.filter(
+    (h) => h.status === "failed" || (h.status !== "key_missing" && h.consecutive_failures >= 3)
+  );
+  const hasProblem = degradedSources.length > 0 || failedSources.length > 0;
+  const overallOk = !hasProblem && !isStale;
+
+  const summaryDetail = isStale
+    ? `最終実行から${STALE_THRESHOLD_MS / 3600000}時間以上経過(GitHub Actions停止の疑い)`
+    : failedSources.length > 0
+      ? `${failedSources.map((h) => SOURCE_LABELS[h.source] ?? h.source).join(", ")} が連続失敗中`
+      : degradedSources.length > 0
+        ? `${degradedSources.map((h) => SOURCE_LABELS[h.source] ?? h.source).join(", ")} が一部劣化中`
+        : null;
 
   return (
     <div className="space-y-6">
@@ -135,6 +156,9 @@ export default function StatusPage() {
             <p className={`font-semibold text-sm ${overallOk ? "text-green-800 dark:text-green-200" : "text-red-800 dark:text-red-200"}`}>
               {overallOk ? "全システム正常" : "一部に問題があります"}
             </p>
+            {summaryDetail && (
+              <p className="text-xs text-red-600 dark:text-red-400 mt-0.5">{summaryDetail}</p>
+            )}
             {data.last_hourly_run && (
               <p className="text-xs text-zinc-500 mt-0.5">
                 最終更新: {formatRelative(data.last_hourly_run)}

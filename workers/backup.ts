@@ -24,6 +24,12 @@ const TABLES = [
   "notification_history",
   "operation_logs",
   "system_settings",
+  // 2026-08-08監査で対象漏れが確認された業務データ
+  "article_updates",
+  "fetch_jobs",
+  "exclusion_logs",
+  "noise_rules",
+  "relevance_feedback",
 ];
 
 async function main() {
@@ -39,21 +45,30 @@ async function main() {
 
   try {
     const backup: Record<string, any[]> = {};
+    const failedTables: string[] = [];
 
     for (const table of TABLES) {
       // Paginate to fetch all rows (PostgREST default limit = 1000)
       const all: any[] = [];
       const PAGE = 1000;
       let from = 0;
+      let tableFailed = false;
       while (true) {
         const { data, error } = await supabase.from(table).select("*").range(from, from + PAGE - 1);
-        if (error) { console.error(`[backup] ${table} 取得失敗:`, error); break; }
+        if (error) { console.error(`[backup] ${table} 取得失敗:`, error); tableFailed = true; break; }
         if (!data || data.length === 0) break;
         all.push(...data);
         if (data.length < PAGE) break;
         from += PAGE;
       }
+      if (tableFailed) failedTables.push(table);
       backup[table] = all;
+    }
+
+    // 一部テーブルの取得に失敗した場合、不完全なバックアップを「完了」として
+    // 記録・報告しない。catchブロックへ渡してstatus=failedにする。
+    if (failedTables.length > 0) {
+      throw new Error(`テーブル取得失敗: ${failedTables.join(", ")}`);
     }
 
     const dateStr = startedAt.toISOString().split("T")[0];

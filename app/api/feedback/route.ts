@@ -75,41 +75,46 @@ export async function POST(request: Request) {
     }
   }
 
-  // 3. Handle keyword/domain rules
-  if (feedback_type === "exclude_keyword" || feedback_type === "add_keyword") {
-    if (target_keyword) {
-      try {
-        await supabase.from("stock_keyword_rules").upsert(
-          {
-            stock_id,
-            keyword: target_keyword,
-            action: feedback_type === "exclude_keyword" ? "exclude" : "add",
-            is_active: true,
-            created_by: user.id,
-          },
-          { onConflict: "stock_id,keyword" }
-        );
-      } catch {
-        // Table may not exist yet — continue
-      }
+  // 3. Handle keyword/domain rules — written to noise_rules (the table the
+  // worker actually reads via applyExclusionRules). stock_keyword_rules is
+  // legacy and no longer written here.
+  const createdBy = user.email ?? "user";
+  async function upsertNoiseRule(ruleType: string, matchType: string, matchValue: string) {
+    const { data: existing } = await supabase
+      .from("noise_rules")
+      .select("id")
+      .eq("stock_id", stock_id)
+      .eq("rule_type", ruleType)
+      .eq("match_type", matchType)
+      .eq("match_value", matchValue)
+      .maybeSingle();
+
+    if (existing) {
+      await supabase.from("noise_rules").update({ is_active: true, updated_at: new Date().toISOString() }).eq("id", existing.id);
+      return;
     }
+
+    await supabase.from("noise_rules").insert({
+      stock_id,
+      scope: "this_stock",
+      rule_type: ruleType,
+      match_type: matchType,
+      match_value: matchValue,
+      reason: reason ?? null,
+      created_by: createdBy,
+    });
+  }
+
+  if (feedback_type === "exclude_keyword" && target_keyword) {
+    await upsertNoiseRule("exclude_candidate", "keyword", target_keyword);
+  }
+
+  if (feedback_type === "add_keyword" && target_keyword) {
+    await upsertNoiseRule("strengthen", "keyword", target_keyword);
   }
 
   if (feedback_type === "weaken_domain" && target_domain) {
-    try {
-      await supabase.from("stock_keyword_rules").upsert(
-        {
-          stock_id,
-          keyword: target_domain,
-          action: "weaken_domain",
-          is_active: true,
-          created_by: user.id,
-        },
-        { onConflict: "stock_id,keyword" }
-      );
-    } catch {
-      // Table may not exist yet — continue
-    }
+    await upsertNoiseRule("weaken_source", "domain", target_domain);
   }
 
   // 4. Log to operation_logs
@@ -152,19 +157,16 @@ export async function GET(request: Request) {
     return NextResponse.json({ data: data ?? [] });
   }
 
-  // GET /api/feedback?type=rules — keyword rules list
+  // GET /api/feedback?type=rules — noise_rules list, shaped for the feedback UI
   if (type === "rules") {
-    try {
-      const { data, error } = await supabase
-        .from("stock_keyword_rules")
-        .select(`*, stocks (id, code, name)`)
-        .order("created_at", { ascending: false });
+    const { data, error } = await supabase
+      .from("noise_rules")
+      .select("id, stock_id, keyword:match_value, action:rule_type, is_active, created_at, stocks (id, code, name)")
+      .order("created_at", { ascending: false })
+      .limit(100);
 
-      if (error) return NextResponse.json({ data: [] });
-      return NextResponse.json({ data: data ?? [] });
-    } catch {
-      return NextResponse.json({ data: [] });
-    }
+    if (error) return NextResponse.json({ data: [], error: error.message });
+    return NextResponse.json({ data: data ?? [] });
   }
 
   // GET /api/feedback?article_id=X&stock_id=Y — single article feedback

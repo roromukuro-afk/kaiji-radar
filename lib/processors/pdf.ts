@@ -1,9 +1,8 @@
 /**
  * PDF 保存・テキスト抽出
  *
- * 1. pdf-parse でテキスト抽出を試みる
- * 2. 失敗または空の場合は OCR (Tesseract.js) にフォールバック
- * 3. Supabase Storage に原本 PDF を保存
+ * 1. pdf-parse でテキスト抽出を試みる(OCRフォールバックはCI環境でクラッシュするため削除済み)
+ * 2. Supabase Storage に原本 PDF を保存
  */
 
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";

@@ -140,24 +140,8 @@ async function main() {
     try { return new URL(url).hostname; } catch { return url; }
   }
 
-  // Legacy stock_keyword_rules (Phase 3.1)
-  type ExclusionRule = {
-    stock_id: string;
-    keyword: string | null;
-    rule_type: string;
-    domain: string | null;
-    confirmation_count: number;
-  };
-  let exclusionRules: ExclusionRule[] = [];
-  try {
-    const { data: ruleData } = await supabase
-      .from("stock_keyword_rules")
-      .select("stock_id, keyword, rule_type, domain, confirmation_count")
-      .eq("is_active", true);
-    if (ruleData) exclusionRules = ruleData;
-  } catch { /* Table may not exist yet */ }
-
-  // Phase 3.2 noise_rules (comprehensive)
+  // Phase 3.2 noise_rules (comprehensive) — 唯一のルールソース。
+  // stock_keyword_rules (Phase 3.1) は書き込みが一本化され廃止済みのため参照しない。
   type NoiseRule = {
     id: string;
     stock_id: string | null;
@@ -181,11 +165,10 @@ async function main() {
     .filter((r) => r.rule_type === "strengthen" && r.match_type === "keyword")
     .map((r) => r.match_value);
 
-  const totalRules = exclusionRules.length + noiseRules.length;
-  if (totalRules > 0) {
+  if (noiseRules.length > 0) {
     const uniqueKw = uniqueProtectCount(dbProtectKeywords);
     console.log(
-      `[fetch-all] ノイズルール: legacy=${exclusionRules.length} noise_rules=${noiseRules.length} 件ロード ` +
+      `[fetch-all] ノイズルール: noise_rules=${noiseRules.length} 件ロード ` +
       `(保護KW: コード${GLOBAL_PROTECT_KEYWORDS.length} + DB${dbProtectKeywords.length} → unique${uniqueKw})`
     );
   }
@@ -230,20 +213,6 @@ async function main() {
           exclusion_candidate: true,
           exclusion_reason: `ノイズルール一致: ${rule.match_type}="${rule.match_value}"`,
         };
-      }
-    }
-
-    // 4. Legacy stock_keyword_rules フォールバック
-    const stockRules = exclusionRules.filter((r) => r.stock_id === stockId);
-    for (const rule of stockRules) {
-      if (rule.rule_type === "domain_exclude" && rule.domain) {
-        if (url.includes(rule.domain)) {
-          return { exclusion_candidate: true, exclusion_reason: `同名別会社ドメイン除外: ${rule.domain}` };
-        }
-      } else if (rule.rule_type === "exclude_candidate" && rule.keyword) {
-        if (text.includes(rule.keyword.toLowerCase())) {
-          return { exclusion_candidate: true, exclusion_reason: `除外キーワード一致: ${rule.keyword}` };
-        }
       }
     }
 

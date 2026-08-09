@@ -7,6 +7,7 @@ import { NoiseReportPanel } from "./NoiseReportPanel";
 import { ShareToChatGptButton } from "./ShareToChatGptButton";
 import { UpdateHistoryPanel } from "./UpdateHistoryPanel";
 import { ImportanceOverride } from "./ImportanceOverride";
+import { MarkAsRead } from "./MarkAsRead";
 
 type Stock = { id: string; code: string; name: string };
 
@@ -30,9 +31,6 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
     .single();
 
   if (!article) notFound();
-
-  // Mark as read
-  await supabase.from("articles").update({ is_read: true, read_at: new Date().toISOString() }).eq("id", id);
 
   // Get PDF if exists
   let pdfUrl: string | null = null;
@@ -83,6 +81,8 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
       </header>
 
       <main className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+        <MarkAsRead articleId={id} isRead={article.is_read === true} />
+
         {/* Importance */}
         <ImportanceOverride
           articleId={id}

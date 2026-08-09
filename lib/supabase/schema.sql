@@ -65,19 +65,6 @@ CREATE TABLE IF NOT EXISTS stock_profiles (
 );
 
 -- ============================
--- stock_profile_history
--- ============================
-CREATE TABLE IF NOT EXISTS stock_profile_history (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  stock_id UUID NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
-  changed_fields JSONB NOT NULL DEFAULT '{}',
-  previous_values JSONB NOT NULL DEFAULT '{}',
-  new_values JSONB NOT NULL DEFAULT '{}',
-  change_reason TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ============================
 -- articles (全情報ソース共通)
 -- ============================
 CREATE TABLE IF NOT EXISTS articles (
@@ -336,7 +323,6 @@ CREATE INDEX IF NOT EXISTS idx_articles_publisher_trgm ON articles USING GIN (pu
 -- ============================
 ALTER TABLE stocks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE stock_profile_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE article_stocks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE article_updates ENABLE ROW LEVEL SECURITY;
@@ -350,22 +336,23 @@ ALTER TABLE backup_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE exclusion_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
 
--- Authenticated user (single user app) can read/write all
-CREATE POLICY "authenticated_all" ON stocks FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON stock_profiles FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON stock_profile_history FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON articles FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON article_stocks FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON article_updates FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON pdf_documents FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON push_subscriptions FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON notification_history FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON health_checks FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON fetch_jobs FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON operation_logs FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON backup_logs FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON exclusion_logs FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "authenticated_all" ON system_settings FOR ALL TO authenticated USING (true) WITH CHECK (true);
+-- 単一ユーザーアプリの唯一のAuth UID (roromukuro@gmail.com) のみ許可。
+-- 2026-08-08: authenticated_all (認証済みなら誰でも) から owner_only へ強化。
+-- 実際の適用は supabase/migrations/20260808092000_rls_owner_only.sql を参照。
+CREATE POLICY "owner_only" ON stocks FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON stock_profiles FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON articles FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON article_stocks FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON article_updates FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON pdf_documents FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON push_subscriptions FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON notification_history FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON health_checks FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON fetch_jobs FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON operation_logs FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON backup_logs FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON exclusion_logs FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
+CREATE POLICY "owner_only" ON system_settings FOR ALL TO authenticated USING (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d') WITH CHECK (auth.uid() = '2852ba86-9fbe-49fe-ae97-06f50d463e5d');
 
 -- Service role bypasses RLS (used by workers)
 -- (Supabase service_role already bypasses RLS by default)

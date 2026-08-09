@@ -114,21 +114,15 @@ export default async function StockPage({
   const filteredArticles = (articles ?? []) as ArticleRow[];
 
   return (
-    <div className="min-h-screen bg-white dark:bg-zinc-950">
-      {/* Back header */}
-      <header className="sticky top-0 z-40 bg-white dark:bg-zinc-950 border-b border-zinc-200 dark:border-zinc-800">
-        <div className="max-w-3xl mx-auto px-4 h-12 flex items-center gap-3">
-          <Link
-            href="/stocks"
-            className="text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
-          >
-            ← 一覧
-          </Link>
-        </div>
-      </header>
+    <div className="space-y-6">
+      <Link
+        href="/stocks"
+        className="inline-block text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+      >
+        ← 一覧
+      </Link>
 
-      <main className="max-w-3xl mx-auto px-4 py-6 space-y-6 pb-24">
-
+      <div className="space-y-6">
         {/* ── Stock header ── */}
         <div className="space-y-1.5">
           <div className="flex items-center gap-2 flex-wrap">
@@ -374,7 +368,7 @@ export default async function StockPage({
           stockId={stock.id}
           initialTypes={profile?.notify_event_types ?? null}
         />
-      </main>
+      </div>
     </div>
   );
 }

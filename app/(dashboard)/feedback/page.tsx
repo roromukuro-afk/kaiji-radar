@@ -56,6 +56,11 @@ const FEEDBACK_BADGE: Record<string, { label: string; cls: string }> = {
   exclude_keyword: { label: "KW除外", cls: "bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200" },
   add_keyword: { label: "KW追加", cls: "bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200" },
   weaken_domain: { label: "DM弱化", cls: "bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200" },
+  // noise_rules.rule_type values (キーワードルール一覧はnoise_rules由来)
+  exclude_candidate: { label: "除外候補", cls: "bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200" },
+  block_notify: { label: "通知停止", cls: "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300" },
+  weaken_source: { label: "DM弱化", cls: "bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200" },
+  strengthen: { label: "関連強化", cls: "bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200" },
 };
 
 function FeedbackBadge({ type }: { type: string }) {
@@ -238,28 +243,28 @@ export default function FeedbackPage() {
   useEffect(() => { loadAll(); }, []);
 
   async function handleDeleteRule(id: string) {
+    const prev = rules;
+    setRules((r) => r.filter((rule) => rule.id !== id));
     try {
-      // Optimistic remove
-      setRules((prev) => prev.filter((r) => r.id !== id));
-      // No dedicated delete API for rules yet — log the intent
-      await fetch("/api/feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          article_id: id,
-          stock_id: id,
-          feedback_type: "cancel",
-          reason: "rule_deleted",
-        }),
-      });
+      const res = await fetch(`/api/noise-rules?id=${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
     } catch {
-      loadAll();
+      setRules(prev);
     }
   }
 
   async function handleToggleRule(id: string, current: boolean) {
     setRules((prev) => prev.map((r) => r.id === id ? { ...r, is_active: !current } : r));
-    // No dedicated toggle API yet — backend table update would go here
+    try {
+      const res = await fetch("/api/noise-rules", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, is_active: !current }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    } catch {
+      setRules((prev) => prev.map((r) => r.id === id ? { ...r, is_active: current } : r));
+    }
   }
 
   async function handleRestore(articleId: string, stockId: string) {
