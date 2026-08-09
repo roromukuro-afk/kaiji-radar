@@ -73,6 +73,8 @@ export async function sendPushToSubscription(
       { TTL: 24 * 3600 }
     );
 
+    const now = new Date().toISOString();
+
     await supabase.from("notification_history").insert({
       article_id: articleId,
       subscription_id: sub.id,
@@ -81,8 +83,14 @@ export async function sendPushToSubscription(
 
     await supabase
       .from("articles")
-      .update({ notification_sent: true, notification_sent_at: new Date().toISOString() })
+      .update({ notification_sent: true, notification_sent_at: now, notification_failed_count: 0 })
       .eq("id", articleId);
+
+    // 端末単位の成功実績を記録し、連続失敗カウントをリセットする
+    await supabase
+      .from("push_subscriptions")
+      .update({ last_success_at: now, consecutive_failures: 0 })
+      .eq("id", sub.id);
 
     return true;
   } catch (err: any) {
@@ -98,6 +106,19 @@ export async function sendPushToSubscription(
     // 410/404: subscription gone → remove it
     if (err?.statusCode === 410 || err?.statusCode === 404) {
       await supabase.from("push_subscriptions").delete().eq("id", sub.id);
+    } else {
+      const { data: subRow } = await supabase
+        .from("push_subscriptions")
+        .select("consecutive_failures")
+        .eq("id", sub.id)
+        .single();
+      await supabase
+        .from("push_subscriptions")
+        .update({
+          last_failure_at: new Date().toISOString(),
+          consecutive_failures: (subRow?.consecutive_failures ?? 0) + 1,
+        })
+        .eq("id", sub.id);
     }
 
     // Increment failure count on article

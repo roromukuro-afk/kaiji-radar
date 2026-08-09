@@ -73,6 +73,28 @@ export async function PATCH(request: Request) {
       .eq("stock_id", id);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
+  } else if (action === "update_rss_urls") {
+    const { rss_urls } = body;
+    if (!Array.isArray(rss_urls) || !rss_urls.every((u) => typeof u === "string")) {
+      return NextResponse.json({ error: "rss_urls must be an array of strings" }, { status: 400 });
+    }
+    for (const u of rss_urls) {
+      try { new URL(u); } catch {
+        return NextResponse.json({ error: `不正なURL: ${u}` }, { status: 400 });
+      }
+    }
+    const { error } = await supabase
+      .from("stock_profiles")
+      .update({ rss_urls })
+      .eq("stock_id", id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    await supabase.from("operation_logs").insert({
+      action: "update_rss_urls",
+      target_id: id,
+      result: "success",
+      details: { count: rss_urls.length },
+    });
+    return NextResponse.json({ ok: true });
   } else if (action === "pause") {
     updateData = { status: "paused" };
     logAction = "pause_stock";

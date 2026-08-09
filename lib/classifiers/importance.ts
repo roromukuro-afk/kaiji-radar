@@ -14,7 +14,15 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// 遅延生成: モジュール読み込み時ではなく実際に使う時にAPIキーを読む。
+// CLIスクリプト(loadEnvでprocess.envを後から設定する)がモジュールimport後に
+// .env.localを読み込む構成のため、モジュール直下でクライアントを作ると
+// 環境変数が未設定のまま固定されてしまう。
+let client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  return client;
+}
 
 export type ImportanceTier = "critical" | "important" | "normal";
 
@@ -123,7 +131,7 @@ async function checkMagnitudeByAI(
 - "normal": 記載内容が軽微、または規模を判断できる記述が無い`;
 
   try {
-    const response = await client.messages.create({
+    const response = await getClient().messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 150,
       messages: [{ role: "user", content: prompt }],

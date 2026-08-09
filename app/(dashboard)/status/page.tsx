@@ -75,6 +75,15 @@ type OperationLog = {
   details: Record<string, any> | null;
 };
 
+type PushSubscription = {
+  id: string;
+  endpoint: string;
+  created_at: string;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  consecutive_failures: number;
+};
+
 type Capacity = {
   articles: number;
   notification_history: number;
@@ -89,6 +98,7 @@ const SOURCE_LABELS: Record<string, string> = {
   edinet: "EDINET",
   google_news_jp: "Googleニュース (JP)",
   google_news_en: "Googleニュース (EN)",
+  google_news_url_resolve: "Google News実URL解決",
   pr_times: "PR TIMES",
   claude_api: "Claude API",
   web_push: "Web Push",
@@ -111,6 +121,7 @@ export default function StatusPage() {
     storage_bytes: number;
     operation_logs: OperationLog[];
     capacity: Capacity;
+    push_subscriptions: PushSubscription[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -129,10 +140,14 @@ export default function StatusPage() {
   const lastRunAt = data.last_hourly_run ? new Date(data.last_hourly_run).getTime() : null;
   const isStale = lastRunAt === null || Date.now() - lastRunAt > STALE_THRESHOLD_MS;
 
-  // key_missing(意図的な未設定)は問題扱いしない。degraded/failedと
+  // key_missing(意図的な未設定)は問題扱いしない。google_news_url_resolveは
+  // 失敗時も元のGoogle Newsリンクへフォールバックし記事保存自体は続くため、
+  // 全体判定には含めず個別ステータス表示のみに留める。degraded/failedと
   // consecutive_failures>=3は、連続失敗回数だけでは拾えない「一部劣化」も含めて反映する。
-  const degradedSources = data.health_checks.filter((h) => h.status === "degraded");
-  const failedSources = data.health_checks.filter(
+  const NON_BLOCKING_SOURCES = new Set(["google_news_url_resolve"]);
+  const relevantChecks = data.health_checks.filter((h) => !NON_BLOCKING_SOURCES.has(h.source));
+  const degradedSources = relevantChecks.filter((h) => h.status === "degraded");
+  const failedSources = relevantChecks.filter(
     (h) => h.status === "failed" || (h.status !== "key_missing" && h.consecutive_failures >= 3)
   );
   const hasProblem = degradedSources.length > 0 || failedSources.length > 0;
@@ -212,6 +227,37 @@ export default function StatusPage() {
         {data.health_checks.map((h) => (
           <HealthRow key={h.source} check={h} />
         ))}
+      </section>
+
+      {/* Push subscriptions (端末別) */}
+      <section className="space-y-2">
+        <h2 className="font-semibold text-sm text-zinc-500">登録デバイス(Push通知)</h2>
+        {(data.push_subscriptions ?? []).length === 0 ? (
+          <p className="text-sm text-zinc-400">登録済みデバイスなし</p>
+        ) : (data.push_subscriptions ?? []).map((s) => {
+          const broken = s.consecutive_failures >= 3;
+          return (
+            <div key={s.id} className="rounded-xl border border-zinc-100 dark:border-zinc-800 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-zinc-500 font-mono truncate">…{s.endpoint.slice(-24)}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${
+                  broken
+                    ? "bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200"
+                    : s.consecutive_failures > 0
+                      ? "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300"
+                      : "bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200"
+                }`}>
+                  {broken ? "配信不可の疑い" : s.consecutive_failures > 0 ? `連続失敗${s.consecutive_failures}回` : "正常"}
+                </span>
+              </div>
+              <p className="text-xs text-zinc-400 mt-1">
+                登録: {formatRelative(s.created_at)}
+                {s.last_success_at && ` · 最終成功: ${formatRelative(s.last_success_at)}`}
+                {s.last_failure_at && ` · 最終失敗: ${formatRelative(s.last_failure_at)}`}
+              </p>
+            </div>
+          );
+        })}
       </section>
 
       {/* Recent jobs */}

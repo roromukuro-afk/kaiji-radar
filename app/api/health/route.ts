@@ -6,12 +6,16 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const [healthRes, jobsRes, storageRes, settingsRes, logsRes] = await Promise.all([
+  const [healthRes, jobsRes, storageRes, settingsRes, logsRes, pushSubsRes] = await Promise.all([
     supabase.from("health_checks").select("*").order("source"),
     supabase.from("fetch_jobs").select("*").order("started_at", { ascending: false }).limit(10),
     supabase.from("backup_logs").select("*").order("started_at", { ascending: false }).limit(5),
     supabase.from("system_settings").select("*").eq("key", "last_hourly_run"),
     supabase.from("operation_logs").select("*").order("created_at", { ascending: false }).limit(20),
+    supabase
+      .from("push_subscriptions")
+      .select("id, endpoint, created_at, last_success_at, last_failure_at, consecutive_failures")
+      .order("created_at", { ascending: false }),
   ]);
 
   // Row counts for capacity monitoring
@@ -49,6 +53,7 @@ export async function GET() {
     last_hourly_run: settingsRes.data?.[0]?.value ?? null,
     storage_bytes: totalPdfBytes,
     operation_logs: logsRes.data ?? [],
+    push_subscriptions: pushSubsRes.data ?? [],
     capacity: {
       articles: artCount.count ?? 0,
       notification_history: nhCount.count ?? 0,

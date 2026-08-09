@@ -38,6 +38,10 @@ export function NoiseReportPanel({
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const [previewing, setPreviewing] = useState(false);
+  const [previewResults, setPreviewResults] = useState<
+    { match_type: string; match_value: string; matched_count: number | null }[] | null
+  >(null);
 
   if (done) {
     return (
@@ -48,12 +52,51 @@ export function NoiseReportPanel({
     );
   }
 
-  async function handleSubmit() {
+  function buildRules(): object[] {
     const kws = keywords.split(/[,、\n]/).map((k) => k.trim()).filter(Boolean);
     const domains = domain.split(/[,、\n]/).map((d) => d.trim()).filter(Boolean);
     const publishers = pub.split(/[,、\n]/).map((p) => p.trim()).filter(Boolean);
+    const rules: object[] = [];
+    const base = {
+      stock_id: scope === "this_stock" ? stock.id : undefined,
+      scope,
+      rule_type: action,
+      reason: reason || `${stock.code} ${stock.name}: 手動ノイズ報告`,
+    };
+    for (const k of kws)       rules.push({ ...base, match_type: "keyword", match_value: k });
+    for (const d of domains)   rules.push({ ...base, match_type: "domain",  match_value: d });
+    for (const p of publishers) rules.push({ ...base, match_type: "publisher", match_value: p });
+    return rules;
+  }
 
-    if (!kws.length && !domains.length && !publishers.length) {
+  async function handlePreview() {
+    const rules = buildRules();
+    if (rules.length === 0) {
+      setError("キーワード、ドメイン、媒体のいずれかを入力してください");
+      return;
+    }
+    setPreviewing(true);
+    setError("");
+    try {
+      const res = await fetch("/api/noise-rules/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rules }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const j = await res.json();
+      setPreviewResults(j.results ?? []);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function handleSubmit() {
+    const rules = buildRules();
+
+    if (rules.length === 0) {
       setError("キーワード、ドメイン、媒体のいずれかを入力してください");
       return;
     }
@@ -61,17 +104,6 @@ export function NoiseReportPanel({
     setSubmitting(true);
     setError("");
     try {
-      const rules: object[] = [];
-      const base = {
-        stock_id: scope === "this_stock" ? stock.id : undefined,
-        scope,
-        rule_type: action,
-        reason: reason || `${stock.code} ${stock.name}: 手動ノイズ報告`,
-      };
-      for (const k of kws)       rules.push({ ...base, match_type: "keyword", match_value: k });
-      for (const d of domains)   rules.push({ ...base, match_type: "domain",  match_value: d });
-      for (const p of publishers) rules.push({ ...base, match_type: "publisher", match_value: p });
-
       const res = await fetch("/api/noise-rules", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -147,7 +179,7 @@ export function NoiseReportPanel({
             </label>
             <textarea
               value={keywords}
-              onChange={(e) => setKeywords(e.target.value)}
+              onChange={(e) => { setKeywords(e.target.value); setPreviewResults(null); }}
               placeholder={"バファローズ, プロ野球, 試合結果"}
               rows={2}
               className="w-full px-2 py-1.5 text-xs rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 resize-none"
@@ -162,7 +194,7 @@ export function NoiseReportPanel({
             <input
               type="text"
               value={domain}
-              onChange={(e) => setDomain(e.target.value)}
+              onChange={(e) => { setDomain(e.target.value); setPreviewResults(null); }}
               placeholder="example.com"
               className="w-full px-2 py-1.5 text-xs rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950"
             />
@@ -176,7 +208,7 @@ export function NoiseReportPanel({
             <input
               type="text"
               value={pub}
-              onChange={(e) => setPub(e.target.value)}
+              onChange={(e) => { setPub(e.target.value); setPreviewResults(null); }}
               placeholder="スポーツニッポン"
               className="w-full px-2 py-1.5 text-xs rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950"
             />
@@ -187,11 +219,11 @@ export function NoiseReportPanel({
             <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">適用範囲</label>
             <div className="flex gap-3 text-xs">
               <label className="flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" value="this_stock" checked={scope === "this_stock"} onChange={() => setScope("this_stock")} />
+                <input type="radio" value="this_stock" checked={scope === "this_stock"} onChange={() => { setScope("this_stock"); setPreviewResults(null); }} />
                 <span>この銘柄だけ ({stock.code} {stock.name})</span>
               </label>
               <label className="flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" value="all_stocks" checked={scope === "all_stocks"} onChange={() => setScope("all_stocks")} />
+                <input type="radio" value="all_stocks" checked={scope === "all_stocks"} onChange={() => { setScope("all_stocks"); setPreviewResults(null); }} />
                 <span>全銘柄</span>
               </label>
             </div>
@@ -213,7 +245,26 @@ export function NoiseReportPanel({
             <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
           )}
 
+          {previewResults && previewResults.length > 0 && (
+            <div className="rounded-lg bg-zinc-50 dark:bg-zinc-900 p-2 space-y-1">
+              <p className="text-xs font-medium text-zinc-500">影響件数(既存記事のうち一致する件数)</p>
+              {previewResults.map((r, i) => (
+                <p key={i} className="text-xs text-zinc-600 dark:text-zinc-400">
+                  {r.match_type}=&quot;{r.match_value}&quot;: {r.matched_count === null ? "取得失敗" : `${r.matched_count}件`}
+                </p>
+              ))}
+              <p className="text-xs text-zinc-400">※ドメイン・URLパターンはURL全体への部分一致による概算です</p>
+            </div>
+          )}
+
           <div className="flex gap-2">
+            <button
+              onClick={handlePreview}
+              disabled={previewing || submitting}
+              className="px-3 py-2 rounded-lg text-xs font-medium border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 disabled:opacity-50 transition-colors"
+            >
+              {previewing ? "確認中…" : "影響件数を確認"}
+            </button>
             <button
               onClick={handleSubmit}
               disabled={submitting}

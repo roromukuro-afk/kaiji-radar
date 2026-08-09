@@ -29,7 +29,7 @@ import {
   fetchGenericRss,
   detectPaywall,
 } from "../lib/fetchers/news.js";
-import { isGoogleNewsUrl, resolveGoogleNewsUrl } from "../lib/fetchers/google-news-decoder.js";
+import { isGoogleNewsUrl, resolveGoogleNewsUrl, getResolveStats } from "../lib/fetchers/google-news-decoder.js";
 import { canonicalizeUrl } from "../lib/utils.js";
 import { classifyEventType, type EventType } from "../lib/classifiers/event-type.js";
 import { classifyImportance } from "../lib/classifiers/importance.js";
@@ -680,6 +680,26 @@ async function main() {
   await supabase
     .from("system_settings")
     .upsert({ key: "last_hourly_run", value: `"${new Date().toISOString()}"`, updated_at: new Date().toISOString() });
+
+  // Google News実URL解決の状態を記録(非公式APIに依存し壊れやすいため、
+  // 状態画面で「解決率が落ちていないか」を追えるようにする)
+  const resolveStats = getResolveStats();
+  if (resolveStats.attempts > 0) {
+    const failureRate = resolveStats.failures / resolveStats.attempts;
+    const status = failureRate === 0 ? "ok" : failureRate < 0.5 ? "degraded" : "failed";
+    const now = new Date().toISOString();
+    await supabase.from("health_checks").upsert(
+      {
+        source: "google_news_url_resolve",
+        status,
+        checked_at: now,
+        ...(status === "ok"
+          ? { last_success_at: now, consecutive_failures: 0, error_message: null }
+          : { last_failure_at: now, error_message: `${resolveStats.failures}/${resolveStats.attempts}件が解決失敗` }),
+      },
+      { onConflict: "source" }
+    );
+  }
 }
 
 // ============================

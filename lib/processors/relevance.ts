@@ -11,7 +11,12 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// 遅延生成の理由は lib/classifiers/importance.ts のコメントを参照
+let client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  return client;
+}
 
 export type RelevanceResult = "certain" | "uncertain" | "irrelevant";
 
@@ -49,7 +54,7 @@ export async function checkRelevance(
 注意: 投資判断・重要度は評価しないこと。`;
 
   try {
-    const response = await client.messages.create({
+    const response = await getClient().messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 150,
       messages: [{ role: "user", content: prompt }],
@@ -76,7 +81,7 @@ export async function checkRelevance(
 
 export async function translateTitleJa(englishTitle: string): Promise<string> {
   try {
-    const response = await client.messages.create({
+    const response = await getClient().messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 100,
       messages: [

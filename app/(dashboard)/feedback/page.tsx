@@ -295,6 +295,12 @@ export default function FeedbackPage() {
     <div className="space-y-4">
       <h1 className="font-semibold text-sm text-zinc-500">フィードバック管理</h1>
 
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 p-3 text-xs text-zinc-600 dark:text-zinc-400 space-y-1">
+        <p><span className="font-medium text-zinc-800 dark:text-zinc-200">「関連あり/不確実/関係なし/同名別会社」</span>は記事のuser_relevanceを直接更新し、即座に今後の通知判定へ反映されます。</p>
+        <p><span className="font-medium text-zinc-800 dark:text-zinc-200">「キーワードルール」タブ</span>(noise_rules)は次回以降の取得・再分類で実際に使われます。</p>
+        <p><span className="font-medium text-zinc-800 dark:text-zinc-200">「フィードバック一覧」タブ</span>は操作履歴の記録のみで、AIの自動判定を学習・改善する処理には使われていません。</p>
+      </div>
+
       {/* Tabs */}
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-700 overflow-x-auto">
         {TABS.map((t) => (

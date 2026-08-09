@@ -4,6 +4,7 @@ import { formatJST, formatRelative, sourceTypeLabel, sourceTypeColor } from "@/l
 import { eventTypeLabel } from "@/lib/classifiers/event-type";
 import Link from "next/link";
 import { NotifyEventTypesSettings } from "./NotifyEventTypesSettings";
+import { RssUrlsSettings } from "./RssUrlsSettings";
 
 type TabKey = "all" | "important" | "tdnet" | "edinet" | "official" | "pr_times" | "jp_news" | "en_news" | "uncertain" | "excluded";
 
@@ -53,6 +54,7 @@ export default async function StockPage({
     jp_keywords: string[] | null;
     en_keywords: string[] | null;
     notify_event_types: string[] | null;
+    rss_urls: string[] | null;
   } | null;
 
   // ── Count query: full stats across all articles for this stock ──
@@ -362,6 +364,12 @@ export default async function StockPage({
             </div>
           </section>
         )}
+
+        {/* ── RSS settings ── */}
+        <RssUrlsSettings
+          stockId={stock.id}
+          initialUrls={profile?.rss_urls ?? []}
+        />
 
         {/* ── Notification settings ── */}
         <NotifyEventTypesSettings

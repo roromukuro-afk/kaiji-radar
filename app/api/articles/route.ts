@@ -1,13 +1,27 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 
+// キーワード検索にPDF抽出本文(pdf_documents.extracted_text)も含めるため、
+// 該当するpdf_document_idを1回だけ解決してフィルターへ渡す(呼び出し側でキャッシュする)。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function resolveSearchPdfDocIds(supabase: any, search: string | null): Promise<string[]> {
+  if (!search) return [];
+  const { data } = await supabase
+    .from("pdf_documents")
+    .select("id")
+    .ilike("extracted_text", `%${search}%`)
+    .limit(500);
+  return (data ?? []).map((d: { id: string }) => d.id);
+}
+
 // GET一覧とPATCH(mark_all_read)で同じフィルター条件を使い回すための共通処理。
 // ここがズレると「一覧に見えている条件」と「一括更新される条件」が食い違うバグになる。
 function applyListFilters(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   query: any,
   searchParams: URLSearchParams,
-  opts: { includeIsRead?: boolean } = {}
+  opts: { includeIsRead?: boolean } = {},
+  searchPdfDocIds: string[] = []
 ) {
   const { includeIsRead = true } = opts;
   const stockId = searchParams.get("stock_id");
@@ -38,9 +52,15 @@ function applyListFilters(
   if (publishedAfter) query = query.gte("published_at", publishedAfter);
   if (searchParams.get("exclude_irrelevant") === "true") query = query.neq("relevance", "irrelevant");
   if (search) {
-    query = query.or(
-      `title.ilike.%${search}%,summary.ilike.%${search}%,publisher.ilike.%${search}%`
-    );
+    const searchOr = [
+      `title.ilike.%${search}%`,
+      `summary.ilike.%${search}%`,
+      `publisher.ilike.%${search}%`,
+    ];
+    if (searchPdfDocIds.length > 0) {
+      searchOr.push(`pdf_document_id.in.(${searchPdfDocIds.join(",")})`);
+    }
+    query = query.or(searchOr.join(","));
   }
   return query;
 }
@@ -75,7 +95,8 @@ export async function GET(request: Request) {
     .order("published_at", { ascending: false })
     .range(offset, offset + limit - 1);
 
-  query = applyListFilters(query, searchParams);
+  const searchPdfDocIds = await resolveSearchPdfDocIds(supabase, search);
+  query = applyListFilters(query, searchParams, {}, searchPdfDocIds);
 
   const { data, error, count } = await query;
 
@@ -129,6 +150,7 @@ export async function PATCH(request: Request) {
     // 現在表示中の50件だけでなく、フィルター条件に一致する未読記事を
     // DB側ですべて既読にする(Supabaseの1000件上限を避けるためID解決をページング)。
     const ids = new Set<string>();
+    const searchPdfDocIds = await resolveSearchPdfDocIds(supabase, searchParams.get("q"));
     const PAGE = 1000;
     for (let offset = 0; ; offset += PAGE) {
       let idQuery = supabase
@@ -136,7 +158,7 @@ export async function PATCH(request: Request) {
         .select("id, article_stocks!inner(stock_id)")
         .eq("is_read", false)
         .range(offset, offset + PAGE - 1);
-      idQuery = applyListFilters(idQuery, searchParams, { includeIsRead: false });
+      idQuery = applyListFilters(idQuery, searchParams, { includeIsRead: false }, searchPdfDocIds);
 
       const { data, error } = await idQuery;
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -169,10 +191,18 @@ export async function PATCH(request: Request) {
     updateData.is_read = is_read;
     if (is_read) updateData.read_at = new Date().toISOString();
   }
+
+  // 手動上書き前の状態を記録しておく(規則ベース分類のチューニング材料にするため)
+  let priorRows: { id: string; title: string; event_type: string | null; importance: string | null; importance_source: string | null }[] = [];
   if (importance !== undefined) {
     if (!["critical", "important", "normal"].includes(importance)) {
       return NextResponse.json({ error: "invalid importance value" }, { status: 400 });
     }
+    const { data } = await supabase
+      .from("articles")
+      .select("id, title, event_type, importance, importance_source")
+      .in("id", ids);
+    priorRows = data ?? [];
     updateData.importance = importance;
     updateData.importance_source = "manual";
     updateData.importance_overridden_at = new Date().toISOString();
@@ -188,5 +218,27 @@ export async function PATCH(request: Request) {
     .in("id", ids);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (importance !== undefined && priorRows.length > 0) {
+    // 規則/AI判定と手動判定がズレたケースだけ記録(既に人間が同じ判定を再選択しただけの場合は除く)
+    const changed = priorRows.filter((r) => r.importance !== importance);
+    if (changed.length > 0) {
+      await supabase.from("operation_logs").insert(
+        changed.map((r) => ({
+          action: "importance_manual_override",
+          target_id: r.id,
+          result: "success",
+          details: {
+            title: r.title,
+            event_type: r.event_type,
+            previous_importance: r.importance,
+            previous_source: r.importance_source,
+            new_importance: importance,
+          },
+        }))
+      );
+    }
+  }
+
   return NextResponse.json({ ok: true });
 }

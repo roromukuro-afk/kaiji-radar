@@ -8,6 +8,7 @@ import { ShareToChatGptButton } from "./ShareToChatGptButton";
 import { UpdateHistoryPanel } from "./UpdateHistoryPanel";
 import { ImportanceOverride } from "./ImportanceOverride";
 import { MarkAsRead } from "./MarkAsRead";
+import { eventTypeLabel } from "@/lib/classifiers/event-type";
 
 type Stock = { id: string; code: string; name: string };
 
@@ -96,6 +97,11 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
           <span className={`text-xs px-2 py-1 rounded-lg font-medium ${sourceTypeColor(article.source_type)}`}>
             {sourceTypeLabel(article.source_type)}
           </span>
+          {article.event_type && article.event_type !== "other" && (
+            <span className="text-xs px-2 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
+              {eventTypeLabel(article.event_type)}
+            </span>
+          )}
           {stocks.map((s) => (
             <Link
               key={s.id}

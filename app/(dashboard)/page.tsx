@@ -111,6 +111,8 @@ function countActiveFilters(f: Filter): number {
   return n;
 }
 
+type ImportanceCounts = { critical: number; important: number; normal: number };
+
 export default function FeedPage() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [loading, setLoading] = useState(true);
@@ -118,6 +120,8 @@ export default function FeedPage() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadByTier, setUnreadByTier] = useState<ImportanceCounts>({ critical: 0, important: 0, normal: 0 });
+  const [topCritical, setTopCritical] = useState<Article[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -157,7 +161,27 @@ export default function FeedPage() {
       .select("id", { count: "exact", head: true })
       .eq("is_read", false)
       .then(({ count }) => setUnreadCount(count ?? 0));
+
+    Promise.all(
+      (["critical", "important", "normal"] as const).map((tier) =>
+        supabase
+          .from("articles")
+          .select("id", { count: "exact", head: true })
+          .eq("is_read", false)
+          .eq("importance", tier)
+          .then(({ count }) => [tier, count ?? 0] as const)
+      )
+    ).then((entries) => setUnreadByTier(Object.fromEntries(entries) as ImportanceCounts));
   }, [articles]);
+
+  // 最重要記事だけをまとめたトップ領域(現在フィルターに関わらず、未読の最重要をピン留め表示)
+  useEffect(() => {
+    if (filter.importance === "critical") { setTopCritical([]); return; }
+    fetch("/api/articles?importance=critical&is_read=false&limit=5")
+      .then((r) => r.json())
+      .then((j) => setTopCritical(j.data ?? []))
+      .catch(() => {});
+  }, [filter.importance, articles]);
 
   const [markingAllRead, setMarkingAllRead] = useState(false);
 
@@ -245,6 +269,55 @@ export default function FeedPage() {
           {refreshing ? "更新中…" : "今すぐ更新"}
         </button>
       </div>
+
+      {/* Importance tabs */}
+      <div className="flex gap-1.5 flex-wrap">
+        {([
+          { value: "", label: "すべて", count: null },
+          { value: "critical", label: "最重要", count: unreadByTier.critical },
+          { value: "important", label: "重要", count: unreadByTier.important },
+          { value: "normal", label: "通常", count: unreadByTier.normal },
+        ] as const).map((t) => (
+          <button
+            key={t.value}
+            onClick={() => setFilter((f) => ({ ...f, importance: t.value }))}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              filter.importance === t.value
+                ? t.value === "critical"
+                  ? "bg-red-600 text-white"
+                  : "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
+                : "border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800"
+            }`}
+          >
+            {t.label}
+            {t.count !== null && t.count > 0 && (
+              <span className={`inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 rounded-full text-[10px] font-bold ${
+                filter.importance === t.value ? "bg-white/25" : "bg-zinc-200 dark:bg-zinc-700"
+              }`}>
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* 最重要トップ領域: 未読の最重要記事をフィルター状態に関わらずピン留め表示 */}
+      {topCritical.length > 0 && (
+        <div className="rounded-xl border border-red-200 dark:border-red-900 bg-red-50/60 dark:bg-red-950/30 p-3 space-y-2">
+          <p className="text-xs font-semibold text-red-700 dark:text-red-400">★ 最重要(未読 {unreadByTier.critical}件)</p>
+          <div className="space-y-1.5">
+            {topCritical.map((a) => (
+              <Link
+                key={a.id}
+                href={`/article/${a.id}`}
+                className="block text-sm text-red-900 dark:text-red-200 hover:underline leading-snug"
+              >
+                {truncate(a.title, 60)}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Collapsible filter panel */}
       {filterOpen && (

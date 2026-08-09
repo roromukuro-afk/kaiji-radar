@@ -21,6 +21,15 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 const TIMEOUT_MS = 8000;
 
+// 今回の実行でのURL解決試行・失敗件数(状態画面に表示するため)。
+// worker起動ごとにモジュールが再ロードされるため、実行間で自動的にリセットされる。
+let resolveAttempts = 0;
+let resolveFailures = 0;
+
+export function getResolveStats(): { attempts: number; failures: number } {
+  return { attempts: resolveAttempts, failures: resolveFailures };
+}
+
 export function isGoogleNewsUrl(url: string): boolean {
   try {
     return new URL(url).hostname === "news.google.com";
@@ -145,14 +154,21 @@ export async function resolveGoogleNewsUrl(googleNewsUrl: string): Promise<strin
   const articleId = extractArticleId(googleNewsUrl);
   if (!articleId) return null;
 
+  resolveAttempts++;
+
   const params = await fetchDecodingParams(articleId);
   if (!params) {
     recordGoogleNewsFailure();
+    resolveFailures++;
     return null;
   }
 
   const decoded = await decodeViaBatchExecute(params.signature, params.timestamp, articleId);
-  if (decoded) recordGoogleNewsSuccess();
-  else recordGoogleNewsFailure();
+  if (decoded) {
+    recordGoogleNewsSuccess();
+  } else {
+    recordGoogleNewsFailure();
+    resolveFailures++;
+  }
   return decoded;
 }
