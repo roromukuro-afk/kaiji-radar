@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { formatJST, formatRelative } from "@/lib/utils";
 
 type HealthCheck = {
@@ -183,6 +184,13 @@ export default function StatusPage() {
           </div>
         </div>
       </div>
+
+      <Link
+        href="/status/coverage"
+        className="block rounded-xl border border-zinc-200 dark:border-zinc-700 p-3 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-900"
+      >
+        銘柄別情報源カバレッジを見る →
+      </Link>
 
       {/* Capacity */}
       <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">

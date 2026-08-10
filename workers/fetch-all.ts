@@ -381,6 +381,12 @@ async function main() {
     await updateHealth("tdnet", "ok");
   }
 
+  // 銘柄別カバレッジ: TDnetは銘柄ごとにtier1/tier2/noneの結果が既にわかっている
+  for (const stock of normalizedStocks) {
+    const result = tdnetStockResults[stock.code];
+    await recordCoverage([stock.id], "tdnet", result !== "none", result === "none" ? "やのしん/Yahoo両方失敗" : null);
+  }
+
   // ============================
   // 2. EDINET
   // ============================
@@ -400,6 +406,7 @@ async function main() {
     );
   } else {
   await updateHealth("edinet", "checking");
+  let edinetErr: string | null = null;
   try {
     const secCodes = normalizedStocks.map((s) => s.sec_code ?? stockCodeToSecCode(s.code));
     const today = new Date();
@@ -445,9 +452,11 @@ async function main() {
     }
     await updateHealth("edinet", "ok");
   } catch (err) {
+    edinetErr = String(err);
     results.errors.push(`EDINET: ${err}`);
     await handleSourceError("edinet", String(err));
   }
+  await recordCoverage(normalizedStocks.map((s) => s.id), "edinet", edinetErr === null, edinetErr);
   } // end EDINET key check
 
   // ============================
@@ -455,6 +464,7 @@ async function main() {
   // ============================
   console.log("[fetch-all] 国内ニュース取得開始");
   await updateHealth("jp_news", "checking");
+  let jpNewsErr: string | null = null;
   try {
     for (const stock of normalizedStocks) {
       const profile = stock.stock_profiles;
@@ -543,15 +553,30 @@ async function main() {
     }
     await updateHealth("jp_news", "ok");
   } catch (err) {
+    jpNewsErr = String(err);
     results.errors.push(`JP news: ${err}`);
     await handleSourceError("jp_news", String(err));
   }
+
+  // 銘柄別カバレッジ: jp_news/pr_timesは常に「設定済み」として全銘柄一律で試行される。
+  // official(RSS)はstock_profiles.rss_urlsが設定されている銘柄のみ「設定済み」とする
+  // (企業IRページ直接監視はstock_ir_sourcesで別途追跡するため、ここでは未設定でも
+  //  officialが完全に「未設定」にならないよう、後段でstock_ir_sourcesと合成表示する)。
+  const officialConfiguredMap: Record<string, boolean> = {};
+  for (const stock of normalizedStocks) {
+    officialConfiguredMap[stock.id] = (stock.stock_profiles?.rss_urls?.length ?? 0) > 0;
+  }
+  const allStockIds = normalizedStocks.map((s) => s.id);
+  await recordCoverage(allStockIds, "jp_news", jpNewsErr === null, jpNewsErr);
+  await recordCoverage(allStockIds, "pr_times", jpNewsErr === null, jpNewsErr);
+  await recordCoverage(allStockIds, "official", jpNewsErr === null, jpNewsErr, officialConfiguredMap);
 
   // ============================
   // 4. 海外ニュース (英語)
   // ============================
   console.log("[fetch-all] 海外ニュース取得開始");
   await updateHealth("en_news", "checking");
+  let enNewsErr: string | null = null;
   try {
     for (const stock of normalizedStocks) {
       const profile = stock.stock_profiles;
@@ -632,9 +657,11 @@ async function main() {
     }
     await updateHealth("en_news", "ok");
   } catch (err) {
+    enNewsErr = String(err);
     results.errors.push(`EN news: ${err}`);
     await handleSourceError("en_news", String(err));
   }
+  await recordCoverage(normalizedStocks.map((s) => s.id), "en_news", enNewsErr === null, enNewsErr);
 
   // ============================
   // 5. 企業IRページ直接監視 (RSS未提供企業向け、パイロット運用)
@@ -1137,6 +1164,44 @@ async function processPdf(
     }
   } catch (err) {
     console.error(`[fetch-all] PDF処理失敗 ${docId}:`, err);
+  }
+}
+
+// 銘柄別情報源カバレッジ(新規実装5): 銘柄×情報源ごとに確認結果を記録する。
+// (企業IRページはstock_ir_sourcesで既に同等の粒度を自前追跡しているため対象外)
+async function recordCoverage(
+  stockIds: string[],
+  sourceType: string,
+  ok: boolean,
+  errMsg: string | null,
+  isConfiguredMap?: Record<string, boolean>
+): Promise<void> {
+  const now = new Date().toISOString();
+  for (const stockId of stockIds) {
+    const isConfigured = isConfiguredMap ? (isConfiguredMap[stockId] ?? true) : true;
+    if (ok) {
+      await supabase.from("stock_source_coverage").upsert(
+        {
+          stock_id: stockId, source_type: sourceType, is_configured: isConfigured,
+          last_checked_at: now, last_success_at: now, consecutive_failures: 0, last_error: null, updated_at: now,
+        },
+        { onConflict: "stock_id,source_type" }
+      );
+    } else {
+      const { data: current } = await supabase
+        .from("stock_source_coverage")
+        .select("consecutive_failures")
+        .eq("stock_id", stockId)
+        .eq("source_type", sourceType)
+        .single();
+      await supabase.from("stock_source_coverage").upsert(
+        {
+          stock_id: stockId, source_type: sourceType, is_configured: isConfigured,
+          last_checked_at: now, consecutive_failures: (current?.consecutive_failures ?? 0) + 1, last_error: errMsg, updated_at: now,
+        },
+        { onConflict: "stock_id,source_type" }
+      );
+    }
   }
 }
 
