@@ -1,10 +1,12 @@
-import { diffChars } from "diff";
+import { diffChars, diffWords } from "diff";
 import { formatJST } from "@/lib/utils";
 
 type UpdateRow = {
   id: string;
   previous_title: string | null;
   new_title: string | null;
+  previous_body: string | null;
+  new_body: string | null;
   change_type: string | null;
   detected_at: string;
 };
@@ -14,6 +16,7 @@ type PdfRow = {
   file_hash: string | null;
   file_size_bytes: number | null;
   extraction_method: string | null;
+  extracted_text: string | null;
   fetched_at: string;
 };
 
@@ -49,9 +52,59 @@ function TitleDiff({ from, to }: { from: string; to: string }) {
   );
 }
 
+// 訂正開示の差分表示(新規実装4): 数値・日付らしいトークンは特に見落としやすいため強調する。
+// (要約・投資判断は行わない。機械的な文字列パターンでの強調のみ)
+const NUMERIC_OR_DATE = /^[▲△+\-−]?[\d,]+(\.\d+)?%?$|^\d{1,4}[年/-]\d{1,2}([月/-]\d{1,2}日?)?$/;
+
+function isNumericOrDateToken(text: string): boolean {
+  return NUMERIC_OR_DATE.test(text.trim());
+}
+
+// 本文が極端に長い場合(大部の決算資料等)は単語単位diffのレンダリング負荷を避ける
+const MAX_DIFF_LENGTH = 20000;
+
+function BodyDiff({ from, to }: { from: string; to: string }) {
+  if (from.length > MAX_DIFF_LENGTH || to.length > MAX_DIFF_LENGTH) {
+    return (
+      <p className="text-xs text-zinc-400">
+        本文が長いため差分表示を省略しました({from.length.toLocaleString()}文字 → {to.length.toLocaleString()}文字)
+      </p>
+    );
+  }
+  const parts = diffWords(from, to);
+  return (
+    <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+      {parts.map((part, i) => {
+        const flagged = isNumericOrDateToken(part.value);
+        if (part.added) {
+          return (
+            <span
+              key={i}
+              className={`bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 ${flagged ? "font-bold underline decoration-2" : ""}`}
+            >
+              {part.value}
+            </span>
+          );
+        }
+        if (part.removed) {
+          return (
+            <span
+              key={i}
+              className={`bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 line-through ${flagged ? "font-bold" : ""}`}
+            >
+              {part.value}
+            </span>
+          );
+        }
+        return <span key={i}>{part.value}</span>;
+      })}
+    </p>
+  );
+}
+
 type TimelineEvent =
-  | { kind: "title"; at: string; ordinal: number; from: string; to: string }
-  | { kind: "pdf"; at: string; ordinal: number; hash: string | null };
+  | { kind: "title"; at: string; ordinal: number; from: string; to: string; bodyFrom: string | null; bodyTo: string | null }
+  | { kind: "pdf"; at: string; ordinal: number; hash: string | null; textFrom: string | null; textTo: string | null };
 
 export function UpdateHistoryPanel({ originalTitle, originalCreatedAt, updates, pdfs }: Props) {
   if (updates.length === 0 && pdfs.length <= 1) return null;
@@ -67,10 +120,12 @@ export function UpdateHistoryPanel({ originalTitle, originalCreatedAt, updates, 
   const combined: TimelineEvent[] = [
     ...timeline.map((u, i): TimelineEvent => ({
       kind: "title", at: u.detected_at, ordinal: i + 1, from: u.previous_title ?? "", to: u.new_title ?? "",
+      bodyFrom: u.previous_body, bodyTo: u.new_body,
     })),
     // 最初のPDF(初回保存分)は「差し替え」ではないので除外し、2件目以降のみ差し替えイベントとする
     ...pdfsByTime.slice(1).map((p, i): TimelineEvent => ({
       kind: "pdf", at: p.fetched_at, ordinal: i + 1, hash: p.file_hash,
+      textFrom: pdfsByTime[i].extracted_text, textTo: p.extracted_text,
     })),
   ].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 
@@ -102,6 +157,12 @@ export function UpdateHistoryPanel({ originalTitle, originalCreatedAt, updates, 
                   <span className="text-xs text-zinc-400">{formatJST(ev.at)}</span>
                 </div>
                 <TitleDiff from={ev.from} to={ev.to} />
+                {ev.bodyFrom !== null && ev.bodyTo !== null && ev.bodyFrom !== ev.bodyTo && (
+                  <div className="mt-1 pl-2 border-l-2 border-zinc-200 dark:border-zinc-700">
+                    <p className="text-[11px] text-zinc-400 mb-0.5">概要の差分</p>
+                    <BodyDiff from={ev.bodyFrom} to={ev.bodyTo} />
+                  </div>
+                )}
               </li>
             ) : (
               <li key={`pdf-${idx}`} className="space-y-1">
@@ -111,6 +172,16 @@ export function UpdateHistoryPanel({ originalTitle, originalCreatedAt, updates, 
                   </span>
                   <span className="text-xs text-zinc-400">{formatJST(ev.at)}</span>
                   {ev.hash && <span className="text-xs text-zinc-400 font-mono">hash:{ev.hash.slice(0, 8)}</span>}
+                </div>
+                <div className="mt-1 pl-2 border-l-2 border-zinc-200 dark:border-zinc-700">
+                  {ev.textFrom && ev.textTo ? (
+                    <>
+                      <p className="text-[11px] text-zinc-400 mb-0.5">本文の差分(数値・日付の変更を強調表示)</p>
+                      <BodyDiff from={ev.textFrom} to={ev.textTo} />
+                    </>
+                  ) : (
+                    <p className="text-xs text-zinc-400">本文抽出データがないため差分表示できません</p>
+                  )}
                 </div>
               </li>
             )

@@ -58,13 +58,13 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
   // 訂正・更新履歴
   const { data: updates } = await supabase
     .from("article_updates")
-    .select("id, previous_title, new_title, change_type, detected_at")
+    .select("id, previous_title, new_title, previous_body, new_body, change_type, detected_at")
     .eq("article_id", id)
     .order("detected_at", { ascending: true });
 
   const { data: pdfVersions } = await supabase
     .from("pdf_documents")
-    .select("id, file_hash, file_size_bytes, extraction_method, fetched_at")
+    .select("id, file_hash, file_size_bytes, extraction_method, extracted_text, fetched_at")
     .eq("article_id", id)
     .order("fetched_at", { ascending: false });
 

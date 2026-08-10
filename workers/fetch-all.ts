@@ -855,20 +855,26 @@ async function saveArticle(params: {
   );
 
   if (existingInfo) {
-    // タイトルが実際に変わった場合のみ「更新」として記録する。
+    // タイトル or 本文(概要)が実際に変わった場合のみ「更新」として記録する。
     // (以前は同一URLの再取得ならタイトルが同じでも一律「更新」扱いにしており、
     //  news/RSSの毎時再取得のたびにpreviouson_title=new_titleの空の更新履歴が
     //  大量に作られていた)
     const titleChanged = existingInfo.title !== params.title;
-    if (titleChanged) {
+    const summaryChanged = (existingInfo.summary ?? null) !== (params.summary ?? null);
+    if (titleChanged || summaryChanged) {
       await supabase.from("article_updates").insert({
         article_id: existingInfo.id,
         previous_title: existingInfo.title,
         new_title: params.title,
+        previous_body: existingInfo.summary,
+        new_body: params.summary,
         change_type: params.tdnet_doc_id ? "tdnet_correction" : "content_update",
       });
+      // 訂正開示の差分表示(新規実装4): 過去版はarticle_updatesに記録済みなので、
+      // 現在のレコード自体は最新の内容に更新する(以前はタイトルが更新されず、
+      // 記事詳細に「訂正前の古いタイトル」が表示され続けるバグがあった)。
       await supabase.from("articles")
-        .update({ is_update: true, updated_at: new Date().toISOString() })
+        .update({ title: params.title, summary: params.summary, is_update: true, updated_at: new Date().toISOString() })
         .eq("id", existingInfo.id);
       return { outcome: "updated", article_id: existingInfo.id };
     }
@@ -994,12 +1000,12 @@ async function findExistingArticle(
   tdnetDocId?: string,
   edinetDocId?: string,
   canonicalUrl?: string
-): Promise<{ id: string; title: string; is_update_candidate: boolean } | null> {
+): Promise<{ id: string; title: string; summary: string | null; is_update_candidate: boolean } | null> {
   // Check by TDnet doc ID first (most reliable)
   if (tdnetDocId) {
     const { data } = await supabase
       .from("articles")
-      .select("id, title")
+      .select("id, title, summary")
       .eq("tdnet_doc_id", tdnetDocId)
       .single();
     if (data) return { ...data, is_update_candidate: false };
@@ -1007,7 +1013,7 @@ async function findExistingArticle(
   if (edinetDocId) {
     const { data } = await supabase
       .from("articles")
-      .select("id, title")
+      .select("id, title, summary")
       .eq("edinet_doc_id", edinetDocId)
       .single();
     if (data) return { ...data, is_update_candidate: false };
@@ -1017,7 +1023,7 @@ async function findExistingArticle(
   if (canonicalUrl) {
     const { data } = await supabase
       .from("articles")
-      .select("id, title")
+      .select("id, title, summary")
       .eq("canonical_url", canonicalUrl)
       .single();
     if (data) return { ...data, is_update_candidate: true };
@@ -1025,7 +1031,7 @@ async function findExistingArticle(
   // Check by URL (may indicate a content update)
   const { data } = await supabase
     .from("articles")
-    .select("id, title")
+    .select("id, title, summary")
     .eq("source_url", url)
     .single();
   if (data) return { ...data, is_update_candidate: true };
