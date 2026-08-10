@@ -30,6 +30,7 @@ import {
   detectPaywall,
 } from "../lib/fetchers/news.js";
 import { isGoogleNewsUrl, resolveGoogleNewsUrl, getResolveStats } from "../lib/fetchers/google-news-decoder.js";
+import { crawlIrPage } from "../lib/fetchers/ir-page.js";
 import { canonicalizeUrl } from "../lib/utils.js";
 import { classifyEventType, type EventType } from "../lib/classifiers/event-type.js";
 import { classifyImportance } from "../lib/classifiers/importance.js";
@@ -621,6 +622,103 @@ async function main() {
   } catch (err) {
     results.errors.push(`EN news: ${err}`);
     await handleSourceError("en_news", String(err));
+  }
+
+  // ============================
+  // 5. 企業IRページ直接監視 (RSS未提供企業向け、パイロット運用)
+  // ============================
+  //   stock_ir_sources.enabled=true の銘柄のみ対象(現状は少数銘柄でのパイロット運用)。
+  //   前回巡回のknown_urlsとの差分だけを新着候補とする。初回巡回はベースライン記録のみ
+  //   行い、既存の全過去記事を新着として誤検知しないようにする。
+  console.log("[fetch-all] IRページ直接監視 開始");
+  await updateHealth("ir_page", "checking");
+  try {
+    const { data: irSourceRows } = await supabase
+      .from("stock_ir_sources")
+      .select("id, stock_id, url, known_urls")
+      .eq("enabled", true);
+
+    for (const irSource of irSourceRows ?? []) {
+      const stock = normalizedStocks.find((s) => s.id === irSource.stock_id);
+      if (!stock) continue;
+      const profile = stock.stock_profiles;
+
+      try {
+        const { items, allUrls } = await crawlIrPage(irSource.url);
+        const knownUrls: string[] = irSource.known_urls ?? [];
+        const isFirstCrawl = knownUrls.length === 0;
+        const knownSet = new Set(knownUrls);
+        const newItems = isFirstCrawl ? [] : items.filter((it) => !knownSet.has(it.url));
+
+        for (const item of newItems) {
+          src.official.candidates++;
+          const existing = await findExistingArticle(item.url);
+          if (existing) { src.official.skipped++; continue; }
+
+          const match = quickKeywordMatch(item.title, stock.name, stock.code, profile?.jp_keywords ?? []);
+          let relevance: "certain" | "uncertain" | "irrelevant" = match ? "certain" : "uncertain";
+          let relevanceReason = "";
+          if (!match) {
+            const check = await checkRelevance(item.title, null, stock.code, stock.name, profile?.jp_keywords ?? []);
+            relevance = check.result;
+            relevanceReason = check.reason;
+          }
+          if (relevance === "irrelevant") {
+            await logExclusion(item.url, item.title, "official", stock.code, relevanceReason);
+            continue;
+          }
+
+          const r = await saveArticle({
+            source_type: "official",
+            source_url: item.url,
+            title: item.title,
+            publisher: stock.name,
+            published_at: new Date().toISOString(),
+            summary: null,
+            stock,
+            relevance,
+            relevance_reason: relevanceReason,
+          });
+
+          if (r.outcome === "new") { src.official.saved++; await notifyArticle(r.article, stock);
+          } else if (r.outcome === "duplicate") { src.official.skipped++;
+          } else if (r.outcome === "updated")   { src.official.updated++;
+          } else                                { src.official.errors++; }
+        }
+
+        // known_urlsを更新(直近500件に制限し無制限増加を防ぐ)
+        const mergedUrls = [...new Set([...knownUrls, ...allUrls])].slice(-500);
+        await supabase.from("stock_ir_sources").update({
+          known_urls: mergedUrls,
+          last_checked_at: new Date().toISOString(),
+          last_success_at: new Date().toISOString(),
+          consecutive_failures: 0,
+          last_error: null,
+        }).eq("id", irSource.id);
+
+        if (isFirstCrawl) {
+          console.log(`[IRページ] ${stock.code} 初回巡回: ベースライン${allUrls.length}件を記録(新着通知なし)`);
+        }
+      } catch (err) {
+        const errMsg = String(err instanceof Error ? err.message : err);
+        console.error(`[IRページ] ${stock.code} 取得失敗 ${irSource.url}:`, errMsg);
+        const { data: current } = await supabase
+          .from("stock_ir_sources")
+          .select("consecutive_failures")
+          .eq("id", irSource.id)
+          .single();
+        await supabase.from("stock_ir_sources").update({
+          last_checked_at: new Date().toISOString(),
+          consecutive_failures: (current?.consecutive_failures ?? 0) + 1,
+          last_error: errMsg,
+        }).eq("id", irSource.id);
+      }
+      await sleep(500);
+    }
+    await updateHealth("ir_page", "ok");
+  } catch (err) {
+    results.errors.push(`IRページ: ${err}`);
+    await handleSourceError("ir_page", String(err));
   }
 
   // ============================

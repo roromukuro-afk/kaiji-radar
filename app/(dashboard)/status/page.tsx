@@ -144,7 +144,8 @@ export default function StatusPage() {
   // 失敗時も元のGoogle Newsリンクへフォールバックし記事保存自体は続くため、
   // 全体判定には含めず個別ステータス表示のみに留める。degraded/failedと
   // consecutive_failures>=3は、連続失敗回数だけでは拾えない「一部劣化」も含めて反映する。
-  const NON_BLOCKING_SOURCES = new Set(["google_news_url_resolve"]);
+  // ir_pageはパイロット運用(少数銘柄のみ)のため、未整備・失敗があっても全体判定には含めない。
+  const NON_BLOCKING_SOURCES = new Set(["google_news_url_resolve", "ir_page"]);
   const relevantChecks = data.health_checks.filter((h) => !NON_BLOCKING_SOURCES.has(h.source));
   const degradedSources = relevantChecks.filter((h) => h.status === "degraded");
   const failedSources = relevantChecks.filter(

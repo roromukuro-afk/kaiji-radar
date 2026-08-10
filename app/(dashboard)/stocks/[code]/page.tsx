@@ -5,6 +5,7 @@ import { eventTypeLabel } from "@/lib/classifiers/event-type";
 import Link from "next/link";
 import { NotifyEventTypesSettings } from "./NotifyEventTypesSettings";
 import { RssUrlsSettings } from "./RssUrlsSettings";
+import { IrSourcesSettings } from "./IrSourcesSettings";
 
 type TabKey = "all" | "important" | "tdnet" | "edinet" | "official" | "pr_times" | "jp_news" | "en_news" | "uncertain" | "excluded";
 
@@ -119,6 +120,12 @@ export default async function StockPage({
 
   const { data: articles } = await filteredQuery;
   const filteredArticles = (articles ?? []) as ArticleRow[];
+
+  const { data: irSources } = await supabase
+    .from("stock_ir_sources")
+    .select("id, url, enabled, last_checked_at, last_success_at, consecutive_failures, last_error")
+    .eq("stock_id", stock.id)
+    .order("created_at", { ascending: true });
 
   return (
     <div className="space-y-6">
@@ -383,6 +390,12 @@ export default async function StockPage({
         <RssUrlsSettings
           stockId={stock.id}
           initialUrls={profile?.rss_urls ?? []}
+        />
+
+        {/* ── IR page monitoring settings ── */}
+        <IrSourcesSettings
+          stockId={stock.id}
+          initialSources={irSources ?? []}
         />
 
         {/* ── Notification settings ── */}
