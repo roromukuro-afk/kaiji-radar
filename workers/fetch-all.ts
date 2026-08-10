@@ -31,6 +31,7 @@ import {
 } from "../lib/fetchers/news.js";
 import { isGoogleNewsUrl, resolveGoogleNewsUrl, getResolveStats } from "../lib/fetchers/google-news-decoder.js";
 import { crawlIrPage } from "../lib/fetchers/ir-page.js";
+import { computeRecoveryWindow } from "../lib/fetchers/recovery.js";
 import { canonicalizeUrl } from "../lib/utils.js";
 import { classifyEventType, type EventType } from "../lib/classifiers/event-type.js";
 import { classifyImportance } from "../lib/classifiers/importance.js";
@@ -109,6 +110,56 @@ async function main() {
   }
 
   const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000);
+
+  // 全情報源の自動取りこぼし回収(新規実装6): 上のlookbackHoursは全ソース共通の
+  // 1つの値でしかなく、特定のソースだけが連続失敗した取りこぼしを検知できない。
+  // source_checkpoints(ソースごとの最終成功時刻)から、ソースごとに独立した
+  // 遡及幅を計算する(通常時はlookbackHours/sinceと同じ挙動になる)。
+  const SOURCE_RECOVERY_CAP_HOURS: Record<string, number> = {
+    tdnet: 48,
+    edinet: 168, // EDINETは日付単位の取得のため、他より広めの上限にする
+    jp_news: 48,
+    en_news: 48,
+    pr_times: 48,
+    official: 72,
+  };
+  const { data: checkpointRows } = await supabase
+    .from("source_checkpoints")
+    .select("source_type, last_success_at");
+  const sourceCheckpoints = new Map(
+    (checkpointRows ?? []).map((r) => [r.source_type as string, r.last_success_at as string | null])
+  );
+  function sourceWindow(sourceType: string) {
+    return computeRecoveryWindow(
+      sourceCheckpoints.get(sourceType) ?? null,
+      LOOKBACK_HOURS_NORMAL,
+      SOURCE_RECOVERY_CAP_HOURS[sourceType] ?? LOOKBACK_HOURS_NORMAL
+    );
+  }
+  const tdnetWindow = sourceWindow("tdnet");
+  const edinetWindow = sourceWindow("edinet");
+  const jpNewsWindow = sourceWindow("jp_news");
+  const enNewsWindow = sourceWindow("en_news");
+  const prTimesWindow = sourceWindow("pr_times");
+  const officialWindow = sourceWindow("official");
+  const recoverySpans = {
+    tdnet: { lookback_hours: tdnetWindow.lookbackHours, is_recovery: tdnetWindow.isRecovery },
+    edinet: { lookback_hours: edinetWindow.lookbackHours, is_recovery: edinetWindow.isRecovery },
+    jp_news: { lookback_hours: jpNewsWindow.lookbackHours, is_recovery: jpNewsWindow.isRecovery },
+    en_news: { lookback_hours: enNewsWindow.lookbackHours, is_recovery: enNewsWindow.isRecovery },
+    pr_times: { lookback_hours: prTimesWindow.lookbackHours, is_recovery: prTimesWindow.isRecovery },
+    official: { lookback_hours: officialWindow.lookbackHours, is_recovery: officialWindow.isRecovery },
+  };
+  async function markSourceCheckpoint(sourceType: string): Promise<void> {
+    await supabase.from("source_checkpoints").upsert(
+      { source_type: sourceType, last_success_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+      { onConflict: "source_type" }
+    );
+  }
+  const recoveringSources = Object.entries(recoverySpans).filter(([, v]) => v.is_recovery).map(([k]) => k);
+  if (recoveringSources.length > 0) {
+    console.log(`[fetch-all] 復旧モード対象ソース: ${recoveringSources.map((k) => `${k}(${recoverySpans[k as keyof typeof recoverySpans].lookback_hours}h)`).join(", ")}`);
+  }
 
   // Load active stocks
   const { data: stocks, error: stocksErr } = await supabase
@@ -289,7 +340,7 @@ async function main() {
 
     // --- Tier 1: yanoshin per-stock RSS (1回リトライ) ---
     try {
-      stockItems = await withRetry(() => fetchTdnetByCodeYanoshin(stock.code, since), 2);
+      stockItems = await withRetry(() => fetchTdnetByCodeYanoshin(stock.code, tdnetWindow.since), 2);
       tier1Ok = true;
       tier1OkCount++;
     } catch (err) {
@@ -297,7 +348,7 @@ async function main() {
       // 取得成功(0件含む) → tier2Ok=true / HTTPエラー → throw を catch して失敗扱い
       console.log(`[TDnet] Tier1 やのしん ${stock.code} 失敗: ${(err as Error).message} → Tier2 Yahoo`);
       try {
-        stockItems = await fetchTdnetByCodeDirect(stock.code, since);
+        stockItems = await fetchTdnetByCodeDirect(stock.code, tdnetWindow.since);
         tier2Ok = true;
       } catch (err2) {
         console.log(`[TDnet] Tier2 Yahoo ${stock.code} も失敗: ${(err2 as Error).message}`);
@@ -377,8 +428,10 @@ async function main() {
     await handleSourceError("tdnet", `${tdnetFailedStocks.length}/${normalizedStocks.length}銘柄で全ソース(やのしん/Yahoo)失敗`);
   } else if (failRatio > 0) {
     await updateHealth("tdnet", "degraded");
+    await markSourceCheckpoint("tdnet");
   } else {
     await updateHealth("tdnet", "ok");
+    await markSourceCheckpoint("tdnet");
   }
 
   // 銘柄別カバレッジ: TDnetは銘柄ごとにtier1/tier2/noneの結果が既にわかっている
@@ -410,9 +463,18 @@ async function main() {
   try {
     const secCodes = normalizedStocks.map((s) => s.sec_code ?? stockCodeToSecCode(s.code));
     const today = new Date();
-    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    // 全情報源の自動取りこぼし回収(新規実装6): 従来は「前日+当日」固定だったため、
+    // EDINET側だけが2日を超える障害から取りこぼしを回収できなかった。
+    // edinetWindow.sinceから当日まで、日単位で巡回する。
+    const datesToCheck: Date[] = [];
+    for (let d = new Date(edinetWindow.since); d <= today; d = new Date(d.getTime() + 24 * 60 * 60 * 1000)) {
+      datesToCheck.push(d);
+    }
+    if (datesToCheck.length === 0 || datesToCheck[datesToCheck.length - 1].toDateString() !== today.toDateString()) {
+      datesToCheck.push(today);
+    }
 
-    for (const date of [yesterday, today]) {
+    for (const date of datesToCheck) {
       const items = await withRetry(() =>
         fetchEdinetByDate(date, secCodes)
       );
@@ -451,6 +513,7 @@ async function main() {
       await sleep(1000);
     }
     await updateHealth("edinet", "ok");
+    await markSourceCheckpoint("edinet");
   } catch (err) {
     edinetErr = String(err);
     results.errors.push(`EDINET: ${err}`);
@@ -474,13 +537,13 @@ async function main() {
         ...(profile?.jp_keywords ?? []),
       ].filter(Boolean);
 
-      const newsItems = await fetchGoogleNewsJP(keywords.slice(0, 5), since);
-      const prItems = await fetchPRTimes(stock.name, since);
+      const newsItems = await fetchGoogleNewsJP(keywords.slice(0, 5), jpNewsWindow.since);
+      const prItems = await fetchPRTimes(stock.name, prTimesWindow.since);
 
       // Custom RSS feeds (企業公式、IR等)
       const customItems = [];
       for (const rssUrl of profile?.rss_urls ?? []) {
-        const items = await fetchGenericRss(rssUrl, "official", since);
+        const items = await fetchGenericRss(rssUrl, "official", officialWindow.since);
         customItems.push(...items);
       }
 
@@ -552,6 +615,7 @@ async function main() {
       await sleep(500);
     }
     await updateHealth("jp_news", "ok");
+    await Promise.all([markSourceCheckpoint("jp_news"), markSourceCheckpoint("pr_times"), markSourceCheckpoint("official")]);
   } catch (err) {
     jpNewsErr = String(err);
     results.errors.push(`JP news: ${err}`);
@@ -586,7 +650,7 @@ async function main() {
         ...(profile?.en_keywords ?? []),
       ].filter(Boolean);
 
-      const enItems = await fetchGoogleNewsEN(keywords.slice(0, 4), since);
+      const enItems = await fetchGoogleNewsEN(keywords.slice(0, 4), enNewsWindow.since);
 
       for (const item of enItems) {
         src.en_news.candidates++;
@@ -656,6 +720,7 @@ async function main() {
       await sleep(500);
     }
     await updateHealth("en_news", "ok");
+    await markSourceCheckpoint("en_news");
   } catch (err) {
     enNewsErr = String(err);
     results.errors.push(`EN news: ${err}`);
@@ -810,6 +875,8 @@ async function main() {
             en_news:  src.en_news,
           },
           tdnet_diag: tdnetDiag,
+          // 全情報源の自動取りこぼし回収(新規実装6): 各ソースが今回どれだけ遡及したか
+          recovery: recoverySpans,
         },
       })
       .eq("id", jobId);

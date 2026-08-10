@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { formatJST, formatRelative } from "@/lib/utils";
+import { formatJST, formatRelative, sourceTypeLabel } from "@/lib/utils";
 
 type HealthCheck = {
   source: string;
@@ -41,6 +41,7 @@ type SourceResults = {
     en_news?: SourceStats;
   };
   tdnet_diag?: TdnetDiag;
+  recovery?: Record<string, { lookback_hours: number; is_recovery: boolean }>;
 };
 
 type FetchJob = {
@@ -379,6 +380,15 @@ function FetchJobCard({ job: j }: { job: FetchJob }) {
         </div>
       )}
       {j.status === "completed" && sr?.tdnet_diag && <TdnetDiagRow diag={sr.tdnet_diag} stocksCount={sr.stocks_count} />}
+      {j.status === "completed" && sr?.recovery && Object.values(sr.recovery).some((r) => r.is_recovery) && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          復旧モード:{" "}
+          {Object.entries(sr.recovery)
+            .filter(([, r]) => r.is_recovery)
+            .map(([source, r]) => `${sourceTypeLabel(source)}(${r.lookback_hours}h遡及)`)
+            .join(", ")}
+        </p>
+      )}
       {!sr && j.status === "completed" && (
         <p className="text-xs text-zinc-500">
           TDnet {j.tdnet_count} / EDINET {j.edinet_count} / 国内 {j.jp_news_count} / 海外 {j.en_news_count} 件
