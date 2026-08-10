@@ -90,6 +90,13 @@ export default async function StocksPage() {
         <span className="text-sm text-zinc-400">{stocks.length} 銘柄</span>
       </div>
 
+      <Link
+        href="/stocks/calendar"
+        className="block rounded-xl border border-zinc-200 dark:border-zinc-700 p-3 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-900"
+      >
+        開示予定カレンダーを見る →
+      </Link>
+
       {/* Active section */}
       {active.length > 0 && (
         <section className="space-y-2">

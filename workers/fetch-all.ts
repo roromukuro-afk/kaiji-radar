@@ -32,6 +32,7 @@ import {
 import { isGoogleNewsUrl, resolveGoogleNewsUrl, getResolveStats } from "../lib/fetchers/google-news-decoder.js";
 import { crawlIrPage } from "../lib/fetchers/ir-page.js";
 import { computeRecoveryWindow } from "../lib/fetchers/recovery.js";
+import { isAutoLinkCandidate } from "../lib/calendar/status.js";
 import { canonicalizeUrl } from "../lib/utils.js";
 import { classifyEventType, type EventType } from "../lib/classifiers/event-type.js";
 import { classifyImportance } from "../lib/classifiers/importance.js";
@@ -1075,6 +1076,27 @@ async function saveArticle(params: {
     }
   } catch (err) {
     console.error(`[fetch-all] 出来事グルーピング失敗 (記事は保存済み) ${article.id}:`, err);
+  }
+
+  // 開示予定カレンダー(新規実装7): この記事が予定イベントの該当記事かどうかを判定する。
+  // 安全ソース(TDnet/EDINET/公式)のみを対象にする(投資判断ではなく確実な一致判定のため)。
+  if (isSafeSource(params.source_type)) {
+    try {
+      const { data: candidateEvents } = await supabase
+        .from("stock_events")
+        .select("id, event_type, scheduled_date, status, linked_article_id")
+        .eq("stock_id", params.stock.id)
+        .is("linked_article_id", null)
+        .neq("status", "postponed");
+      for (const ev of candidateEvents ?? []) {
+        if (isAutoLinkCandidate(ev, { event_type: insertPayload.event_type as string, published_at: params.published_at ?? null })) {
+          await supabase.from("stock_events").update({ linked_article_id: article.id, updated_at: new Date().toISOString() }).eq("id", ev.id);
+          break; // 1記事は1イベントにのみリンクする
+        }
+      }
+    } catch (err) {
+      console.error(`[fetch-all] カレンダー自動リンク失敗 (記事は保存済み) ${article.id}:`, err);
+    }
   }
 
   return {
