@@ -35,6 +35,7 @@ import { canonicalizeUrl } from "../lib/utils.js";
 import { classifyEventType, type EventType } from "../lib/classifiers/event-type.js";
 import { classifyImportance } from "../lib/classifiers/importance.js";
 import { findOrCreateEventGroup, tryMarkEventNotified } from "../lib/classifiers/event-grouping.js";
+import { resolveNotificationRule, type NotificationRule } from "../lib/notifications/rules.js";
 import {
   checkRelevance,
   translateTitleJa,
@@ -160,6 +161,17 @@ async function main() {
       .select("id, stock_id, scope, rule_type, match_type, match_value, is_active")
       .eq("is_active", true);
     if (nrData) noiseRules = nrData;
+  } catch { /* Table may not exist yet */ }
+
+  // 詳細な通知ルール(新規実装3): 一致するルールが無い銘柄・記事は
+  // 既存のnotify_event_types設定にフォールバックする(後方互換)。
+  let notificationRules: NotificationRule[] = [];
+  try {
+    const { data: nrData } = await supabase
+      .from("notification_rules")
+      .select("id, stock_id, importance, event_type, source_type, keyword, action, priority")
+      .eq("is_active", true);
+    if (nrData) notificationRules = nrData;
   } catch { /* Table may not exist yet */ }
 
   // DB の strengthen ルール (= 保護キーワード) を抽出
@@ -322,7 +334,7 @@ async function main() {
       if (r.outcome === "new") {
         src.tdnet.saved++;
         if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "tdnet", r.article.id);
-        await notifyArticle(r.article, stock);
+        await notifyArticle(r.article, stock, notificationRules);
       } else if (r.outcome === "duplicate") {
         src.tdnet.skipped++;
       } else if (r.outcome === "updated") {
@@ -422,7 +434,7 @@ async function main() {
         if (r.outcome === "new") {
           src.edinet.saved++;
           if (item.pdfUrl) await processPdf(item.pdfUrl, item.docId, "edinet", r.article.id);
-          await notifyArticle(r.article, stock);
+          await notifyArticle(r.article, stock, notificationRules);
         } else if (r.outcome === "duplicate") { src.edinet.skipped++;
         } else if (r.outcome === "updated")   {
           src.edinet.updated++;
@@ -522,7 +534,7 @@ async function main() {
           exclusion_reason: excl.exclusion_reason,
         });
 
-        if (r.outcome === "new") { src.jp_news.saved++; await notifyArticle(r.article, stock);
+        if (r.outcome === "new") { src.jp_news.saved++; await notifyArticle(r.article, stock, notificationRules);
         } else if (r.outcome === "duplicate") { src.jp_news.skipped++;
         } else if (r.outcome === "updated")   { src.jp_news.updated++;
         } else                                { src.jp_news.errors++; }
@@ -611,7 +623,7 @@ async function main() {
           exclusion_reason: enExcl.exclusion_reason,
         });
 
-        if (r.outcome === "new") { src.en_news.saved++; await notifyArticle(r.article, stock);
+        if (r.outcome === "new") { src.en_news.saved++; await notifyArticle(r.article, stock, notificationRules);
         } else if (r.outcome === "duplicate") { src.en_news.skipped++;
         } else if (r.outcome === "updated")   { src.en_news.updated++;
         } else                                { src.en_news.errors++; }
@@ -680,7 +692,7 @@ async function main() {
             relevance_reason: relevanceReason,
           });
 
-          if (r.outcome === "new") { src.official.saved++; await notifyArticle(r.article, stock);
+          if (r.outcome === "new") { src.official.saved++; await notifyArticle(r.article, stock, notificationRules);
           } else if (r.outcome === "duplicate") { src.official.skipped++;
           } else if (r.outcome === "updated")   { src.official.updated++;
           } else                                { src.official.errors++; }
@@ -919,7 +931,7 @@ async function saveArticle(params: {
   const { data: article, error } = await supabase
     .from("articles")
     .insert(insertPayload)
-    .select("id, source_type, title, title_ja, publisher, published_at, summary, relevance, is_overseas, source_url, exclusion_candidate, event_type")
+    .select("id, source_type, title, title_ja, publisher, published_at, summary, relevance, is_overseas, source_url, exclusion_candidate, event_type, importance")
     .single();
 
   if (error || !article) {
@@ -1022,7 +1034,8 @@ async function findExistingArticle(
 
 async function notifyArticle(
   article: { id: string; [key: string]: any },
-  stock: StockRecord
+  stock: StockRecord,
+  notificationRules: NotificationRule[]
 ): Promise<void> {
   // 通知スキップ: 無関係確定 or 除外候補
   if (
@@ -1034,11 +1047,29 @@ async function notifyArticle(
     return;
   }
 
-  // 銘柄別の通知種別設定 (未設定 = 全種別を通知、現状の挙動を維持)
-  const notifyTypes = stock.stock_profiles?.notify_event_types;
-  if (notifyTypes && notifyTypes.length > 0 && !notifyTypes.includes(article.event_type)) {
-    console.log(`[fetch-all] 通知スキップ (種別設定): ${article.id} event_type=${article.event_type}`);
-    return;
+  // 詳細な通知ルール(新規実装3): 一致するルールがあればその判定を優先する。
+  // 一致するルールが無ければ、既存の銘柄別通知種別設定にフォールバックする(後方互換)。
+  const matchedRule = resolveNotificationRule(notificationRules, {
+    stock_id: stock.id,
+    importance: article.importance ?? null,
+    event_type: article.event_type ?? null,
+    source_type: article.source_type,
+    title: article.title ?? "",
+  });
+
+  if (matchedRule) {
+    await supabase.from("articles").update({ matched_notification_rule_id: matchedRule.id }).eq("id", article.id);
+    if (matchedRule.action !== "notify") {
+      console.log(`[fetch-all] 通知スキップ (ルール ${matchedRule.id} action=${matchedRule.action}): ${article.id}`);
+      return;
+    }
+  } else {
+    // 銘柄別の通知種別設定 (未設定 = 全種別を通知、現状の挙動を維持)
+    const notifyTypes = stock.stock_profiles?.notify_event_types;
+    if (notifyTypes && notifyTypes.length > 0 && !notifyTypes.includes(article.event_type)) {
+      console.log(`[fetch-all] 通知スキップ (種別設定): ${article.id} event_type=${article.event_type}`);
+      return;
+    }
   }
 
   // 通知は同じ出来事につき原則1回。既に通知済みの出来事ならスキップする。

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { NotificationRulesTab } from "./NotificationRulesTab";
 
 type NoiseRule = {
   id: string;
@@ -58,6 +59,7 @@ function formatDate(s: string | null): string {
 }
 
 export default function RulesPage() {
+  const [pageTab, setPageTab] = useState<"noise" | "notification">("noise");
   const [rules, setRules] = useState<NoiseRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState(0);
@@ -147,9 +149,38 @@ export default function RulesPage() {
 
   return (
     <div className="space-y-4">
+      <h1 className="text-lg font-semibold">ルール</h1>
+
+      {/* Page-level tab switcher */}
+      <div className="flex gap-1">
+        <button
+          onClick={() => setPageTab("noise")}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            pageTab === "noise"
+              ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
+              : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+          }`}
+        >
+          ノイズ除外ルール
+        </button>
+        <button
+          onClick={() => setPageTab("notification")}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            pageTab === "notification"
+              ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
+              : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+          }`}
+        >
+          通知ルール
+        </button>
+      </div>
+
+      {pageTab === "notification" ? (
+        <NotificationRulesTab />
+      ) : (
+      <>
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-lg font-semibold">ノイズ除外ルール</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-2 ml-auto">
           <button
             onClick={() => setShowForm((v) => !v)}
             className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900"
@@ -309,6 +340,8 @@ export default function RulesPage() {
           TDnet・EDINET・企業公式IRはノイズルールの対象外です。これらは常に保存・通知されます。
         </p>
       </div>
+      </>
+      )}
     </div>
   );
 }
