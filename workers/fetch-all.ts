@@ -33,6 +33,7 @@ import { isGoogleNewsUrl, resolveGoogleNewsUrl, getResolveStats } from "../lib/f
 import { canonicalizeUrl } from "../lib/utils.js";
 import { classifyEventType, type EventType } from "../lib/classifiers/event-type.js";
 import { classifyImportance } from "../lib/classifiers/importance.js";
+import { findOrCreateEventGroup, tryMarkEventNotified } from "../lib/classifiers/event-grouping.js";
 import {
   checkRelevance,
   translateTitleJa,
@@ -837,7 +838,45 @@ async function saveArticle(params: {
     stock_id: params.stock.id,
   });
 
-  return { outcome: "new", article: { ...article, stock_code: params.stock.code, stock_name: params.stock.name } };
+  // 同一事象の記事統合: この記事が属する出来事を判定・作成する
+  let eventGroupId: string | null = null;
+  let isEventRepresentative = true;
+  try {
+    const grouping = await findOrCreateEventGroup(supabase, {
+      stockId: params.stock.id,
+      eventType: insertPayload.event_type as string,
+      title: params.title,
+      summary: params.summary,
+      publishedAt: params.published_at,
+      articleId: article.id,
+      sourceType: params.source_type,
+    });
+    eventGroupId = grouping.eventGroupId;
+    isEventRepresentative = grouping.isRepresentative;
+    await supabase
+      .from("articles")
+      .update({ event_group_id: eventGroupId, is_event_representative: isEventRepresentative })
+      .eq("id", article.id);
+    if (grouping.demotedArticleId) {
+      await supabase
+        .from("articles")
+        .update({ is_event_representative: false })
+        .eq("id", grouping.demotedArticleId);
+    }
+  } catch (err) {
+    console.error(`[fetch-all] 出来事グルーピング失敗 (記事は保存済み) ${article.id}:`, err);
+  }
+
+  return {
+    outcome: "new",
+    article: {
+      ...article,
+      stock_code: params.stock.code,
+      stock_name: params.stock.name,
+      event_group_id: eventGroupId,
+      is_event_representative: isEventRepresentative,
+    },
+  };
 }
 
 async function findExistingArticle(
@@ -902,6 +941,15 @@ async function notifyArticle(
   if (notifyTypes && notifyTypes.length > 0 && !notifyTypes.includes(article.event_type)) {
     console.log(`[fetch-all] 通知スキップ (種別設定): ${article.id} event_type=${article.event_type}`);
     return;
+  }
+
+  // 通知は同じ出来事につき原則1回。既に通知済みの出来事ならスキップする。
+  if (article.event_group_id) {
+    const firstNotification = await tryMarkEventNotified(supabase, article.event_group_id);
+    if (!firstNotification) {
+      console.log(`[fetch-all] 通知スキップ (同一出来事の通知済み): ${article.id} event_group_id=${article.event_group_id}`);
+      return;
+    }
   }
 
   try {

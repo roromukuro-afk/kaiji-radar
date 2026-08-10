@@ -28,6 +28,9 @@ type Article = {
   user_relevance: string | null;
   exclusion_candidate: boolean | null;
   notification_failed_count: number;
+  event_group_id: string | null;
+  is_event_representative: boolean;
+  article_events: { member_count: number } | { member_count: number }[] | null;
   article_stocks: { stocks: { id: string; code: string; name: string } }[];
 };
 
@@ -526,6 +529,12 @@ export default function FeedPage() {
 
 function ArticleCard({ article: a, onRead }: { article: Article; onRead: () => void }) {
   const stocks = a.article_stocks?.map((as) => as.stocks).filter(Boolean) ?? [];
+  const eventInfo = Array.isArray(a.article_events) ? a.article_events[0] : a.article_events;
+  const relatedCount = (eventInfo?.member_count ?? 1) - 1;
+
+  const [expanded, setExpanded] = useState(false);
+  const [members, setMembers] = useState<Article[] | null>(null);
+  const [loadingMembers, setLoadingMembers] = useState(false);
 
   async function handleClick() {
     if (!a.is_read) {
@@ -538,18 +547,37 @@ function ArticleCard({ article: a, onRead }: { article: Article; onRead: () => v
     }
   }
 
+  async function toggleExpanded(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!expanded && members === null && a.event_group_id) {
+      setLoadingMembers(true);
+      try {
+        const res = await fetch(`/api/articles?event_group_id=${a.event_group_id}&limit=50`);
+        const json = await res.json();
+        setMembers(((json.data ?? []) as Article[]).filter((m) => m.id !== a.id));
+      } finally {
+        setLoadingMembers(false);
+      }
+    }
+    setExpanded((v) => !v);
+  }
+
   const isExcluded = a.exclusion_candidate === true || a.user_relevance === "irrelevant" || a.user_relevance === "different_company";
 
   return (
-    <Link
-      href={`/article/${a.id}`}
-      onClick={handleClick}
-      className={`block rounded-xl border p-3 transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900 ${
+    <div
+      className={`rounded-xl border transition-colors ${
         a.is_read
           ? "border-zinc-100 dark:border-zinc-800 bg-white dark:bg-zinc-950"
           : "border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-950"
       }`}
     >
+      <Link
+        href={`/article/${a.id}`}
+        onClick={handleClick}
+        className="block p-3 rounded-xl hover:bg-zinc-50 dark:hover:bg-zinc-900"
+      >
       <div className="flex items-start gap-2">
         {/* Unread dot */}
         {!a.is_read && (
@@ -625,6 +653,41 @@ function ArticleCard({ article: a, onRead }: { article: Article; onRead: () => v
           </div>
         </div>
       </div>
-    </Link>
+      </Link>
+
+      {relatedCount > 0 && (
+        <div className="px-3 pb-2 -mt-1">
+          <button
+            onClick={toggleExpanded}
+            className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            {expanded ? "関連記事を閉じる" : `関連記事 ${relatedCount}件`}
+          </button>
+          {expanded && (
+            <div className="mt-1 space-y-1 border-l-2 border-zinc-200 dark:border-zinc-700 pl-2">
+              {loadingMembers ? (
+                <div className="text-xs text-zinc-400">読み込み中…</div>
+              ) : members && members.length > 0 ? (
+                members.map((m) => (
+                  <Link
+                    key={m.id}
+                    href={`/article/${m.id}`}
+                    className="block text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 py-0.5"
+                  >
+                    <span className={`inline-block px-1 py-0.5 rounded mr-1 ${sourceTypeColor(m.source_type)}`}>
+                      {sourceTypeLabel(m.source_type)}
+                    </span>
+                    {truncate(m.title, 60)}
+                    <span className="text-zinc-400"> · {formatRelative(m.published_at)}</span>
+                  </Link>
+                ))
+              ) : (
+                <div className="text-xs text-zinc-400">他の記事はありません</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

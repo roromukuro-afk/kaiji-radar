@@ -14,6 +14,29 @@ async function resolveSearchPdfDocIds(supabase: any, search: string | null): Pro
   return (data ?? []).map((d: { id: string }) => d.id);
 }
 
+// 既読状態は記事単位ではなく出来事単位で扱う: 対象記事が出来事に属する場合、
+// 同じ出来事の他の記事(一覧には代表記事しか出ないため通常は非表示の記事)も
+// まとめて既読にする。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function expandToEventGroupMembers(supabase: any, ids: string[]): Promise<string[]> {
+  if (ids.length === 0) return ids;
+  const { data: rows } = await supabase
+    .from("articles")
+    .select("event_group_id")
+    .in("id", ids)
+    .not("event_group_id", "is", null);
+  const groupIds = [...new Set((rows ?? []).map((r: { event_group_id: string }) => r.event_group_id))];
+  if (groupIds.length === 0) return ids;
+
+  const { data: memberRows } = await supabase
+    .from("articles")
+    .select("id")
+    .in("event_group_id", groupIds);
+  const expanded = new Set(ids);
+  for (const row of (memberRows ?? []) as { id: string }[]) expanded.add(row.id);
+  return [...expanded];
+}
+
 // GET一覧とPATCH(mark_all_read)で同じフィルター条件を使い回すための共通処理。
 // ここがズレると「一覧に見えている条件」と「一括更新される条件」が食い違うバグになる。
 function applyListFilters(
@@ -35,7 +58,15 @@ function applyListFilters(
   const eventType = searchParams.get("event_type");
   const importance = searchParams.get("importance");
   const publishedAfter = searchParams.get("published_after");
+  const eventGroupId = searchParams.get("event_group_id");
 
+  if (eventGroupId) {
+    // 出来事の「関連記事N件」展開: そのグループの全記事を返す(代表記事のみフィルターは適用しない)
+    query = query.eq("event_group_id", eventGroupId);
+  } else {
+    // 通常の一覧表示: 出来事の代表記事(または出来事に属さない記事)だけを表示する
+    query = query.eq("is_event_representative", true);
+  }
   if (stockId) query = query.eq("article_stocks.stock_id", stockId);
   if (sourceType) query = query.eq("source_type", sourceType);
   if (includeIsRead && isRead !== null) query = query.eq("is_read", isRead === "true");
@@ -90,6 +121,7 @@ export async function GET(request: Request) {
       is_read, is_update, is_pdf, doc_type, relevance, notification_sent,
       notification_failed_count, created_at, user_relevance, exclusion_candidate,
       is_important, event_type, importance, importance_reason, importance_source,
+      event_group_id, is_event_representative, article_events (member_count),
       article_stocks!inner (stock_id, stocks!inner (id, code, name))
     `, { count: "exact" })
     .order("published_at", { ascending: false })
@@ -167,7 +199,7 @@ export async function PATCH(request: Request) {
       if (data.length < PAGE) break;
     }
 
-    const idList = [...ids];
+    const idList = await expandToEventGroupMembers(supabase, [...ids]);
     const CHUNK = 500;
     for (let i = 0; i < idList.length; i += CHUNK) {
       const { error } = await supabase
@@ -186,10 +218,17 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "ids array required" }, { status: 400 });
   }
 
-  const updateData: Record<string, unknown> = {};
+  let didUpdate = false;
+
+  // is_readは出来事単位で扱うため、対象を同一event_group_idの記事へ展開する。
+  // importance(手動上書き)は記事ごとの個別判断のため展開しない。
   if (is_read !== undefined) {
-    updateData.is_read = is_read;
-    if (is_read) updateData.read_at = new Date().toISOString();
+    const readUpdate: Record<string, unknown> = { is_read };
+    if (is_read) readUpdate.read_at = new Date().toISOString();
+    const targetIds = is_read ? await expandToEventGroupMembers(supabase, ids) : ids;
+    const { error } = await supabase.from("articles").update(readUpdate).in("id", targetIds);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    didUpdate = true;
   }
 
   // 手動上書き前の状態を記録しておく(規則ベース分類のチューニング材料にするため)
@@ -203,21 +242,22 @@ export async function PATCH(request: Request) {
       .select("id, title, event_type, importance, importance_source")
       .in("id", ids);
     priorRows = data ?? [];
-    updateData.importance = importance;
-    updateData.importance_source = "manual";
-    updateData.importance_overridden_at = new Date().toISOString();
+
+    const { error } = await supabase
+      .from("articles")
+      .update({
+        importance,
+        importance_source: "manual",
+        importance_overridden_at: new Date().toISOString(),
+      })
+      .in("id", ids);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    didUpdate = true;
   }
 
-  if (Object.keys(updateData).length === 0) {
+  if (!didUpdate) {
     return NextResponse.json({ error: "no fields to update" }, { status: 400 });
   }
-
-  const { error } = await supabase
-    .from("articles")
-    .update(updateData)
-    .in("id", ids);
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   if (importance !== undefined && priorRows.length > 0) {
     // 規則/AI判定と手動判定がズレたケースだけ記録(既に人間が同じ判定を再選択しただけの場合は除く)

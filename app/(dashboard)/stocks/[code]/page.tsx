@@ -58,10 +58,12 @@ export default async function StockPage({
   } | null;
 
   // ── Count query: full stats across all articles for this stock ──
+  // is_event_representative=trueのみ集計(同一事象へ統合された記事は代表記事1件分としてカウントする)
   const { data: allArticleData } = await supabase
     .from("articles")
     .select(`id, source_type, is_read, relevance, is_important, article_stocks!inner(stock_id)`)
     .eq("article_stocks.stock_id", stock.id)
+    .eq("is_event_representative", true)
     .limit(2000);
 
   const allArticles = allArticleData ?? [];
@@ -89,6 +91,7 @@ export default async function StockPage({
     importance: string | null;
     relevance: string | null;
     is_overseas: boolean;
+    article_events: { member_count: number } | { member_count: number }[] | null;
     article_stocks: { stock_id: string }[];
   };
 
@@ -96,9 +99,11 @@ export default async function StockPage({
     .from("articles")
     .select(`
       id, source_type, title, title_ja, publisher, published_at, is_read, is_pdf, is_important, event_type, importance, relevance, is_overseas,
+      article_events (member_count),
       article_stocks!inner (stock_id)
     `)
     .eq("article_stocks.stock_id", stock.id)
+    .eq("is_event_representative", true)
     .order("published_at", { ascending: false })
     .limit(100);
 
@@ -214,7 +219,10 @@ export default async function StockPage({
             <p className="text-sm text-zinc-400 py-8 text-center">
               {tab === "excluded" ? "除外候補の記事はありません" : "記事がありません"}
             </p>
-          ) : filteredArticles.map((a) => (
+          ) : filteredArticles.map((a) => {
+            const eventInfo = Array.isArray(a.article_events) ? a.article_events[0] : a.article_events;
+            const relatedCount = (eventInfo?.member_count ?? 1) - 1;
+            return (
             <Link
               key={a.id}
               href={`/article/${a.id}`}
@@ -269,6 +277,11 @@ export default async function StockPage({
                         除外候補
                       </span>
                     )}
+                    {relatedCount > 0 && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
+                        関連記事 {relatedCount}件
+                      </span>
+                    )}
                   </div>
 
                   {/* Title */}
@@ -294,7 +307,8 @@ export default async function StockPage({
                 </div>
               </div>
             </Link>
-          ))}
+            );
+          })}
         </section>
 
         {/* ── Monitoring profile ── */}
