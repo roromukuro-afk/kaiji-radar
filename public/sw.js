@@ -40,7 +40,8 @@ self.addEventListener("push", (event) => {
     payload = { title: "開示レーダー", body: event.data.text() };
   }
 
-  const { title, body, url, badge, icon, tag } = payload;
+  const { title, body, badge, icon, tag, data } = payload;
+  const url = data?.url ?? "/";
 
   event.waitUntil(
     self.registration.showNotification(title ?? "開示レーダー", {
@@ -50,7 +51,7 @@ self.addEventListener("push", (event) => {
       tag: tag ?? "kaiji-radar",
       renotify: true,
       requireInteraction: false,
-      data: { url: url ?? "/" },
+      data: { url },
     })
   );
 });
