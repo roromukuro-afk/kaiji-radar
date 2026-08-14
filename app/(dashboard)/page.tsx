@@ -158,19 +158,23 @@ export default function FeedPage() {
   }, [fetchArticles]);
 
   useEffect(() => {
+    // 一覧の表示条件(代表記事のみ・除外候補を除く)とバッジの件数を一致させる。
+    // ここがズレると「未読バッジは増え続けるのに一覧には何も出ない」状態になる。
     const supabase = createClient();
-    supabase
-      .from("articles")
-      .select("id", { count: "exact", head: true })
-      .eq("is_read", false)
-      .then(({ count }) => setUnreadCount(count ?? 0));
+    const visibleUnread = () =>
+      supabase
+        .from("articles")
+        .select("id", { count: "exact", head: true })
+        .eq("is_read", false)
+        .eq("is_event_representative", true)
+        .not("exclusion_candidate", "is", true)
+        .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)");
+
+    visibleUnread().then(({ count }) => setUnreadCount(count ?? 0));
 
     Promise.all(
       (["critical", "important", "normal"] as const).map((tier) =>
-        supabase
-          .from("articles")
-          .select("id", { count: "exact", head: true })
-          .eq("is_read", false)
+        visibleUnread()
           .eq("importance", tier)
           .then(({ count }) => [tier, count ?? 0] as const)
       )

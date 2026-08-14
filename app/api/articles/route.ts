@@ -71,9 +71,16 @@ function applyListFilters(
   if (sourceType) query = query.eq("source_type", sourceType);
   if (includeIsRead && isRead !== null) query = query.eq("is_read", isRead === "true");
   if (relevance === "irrelevant") {
-    query = query.or("user_relevance.eq.irrelevant,exclusion_candidate.eq.true");
-  } else if (relevance) {
-    query = query.eq("relevance", relevance);
+    // 除外候補ビュー: ノイズルール一致・ユーザー報告のいずれかで除外対象になった記事だけを表示
+    query = query.or("user_relevance.eq.irrelevant,user_relevance.eq.different_company,exclusion_candidate.eq.true");
+  } else {
+    // 通常表示: ノイズルール一致(exclusion_candidate)・ユーザーが無関係と報告した記事は隠す。
+    // (これまでは一覧に「除外候補」バッジを付けるだけで表示自体は隠していなかったため、
+    //  ノイズ判定が実質機能していなかった。確認したい場合は「除外候補」フィルターを選ぶ)
+    query = query
+      .not("exclusion_candidate", "is", true)
+      .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)");
+    if (relevance) query = query.eq("relevance", relevance);
   }
   if (isPaywalled === "true") query = query.eq("is_paywalled", true);
   if (isUpdate === "true") query = query.eq("is_update", true);

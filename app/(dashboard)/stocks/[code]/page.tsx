@@ -59,12 +59,15 @@ export default async function StockPage({
   } | null;
 
   // ── Count query: full stats across all articles for this stock ──
-  // is_event_representative=trueのみ集計(同一事象へ統合された記事は代表記事1件分としてカウントする)
+  // is_event_representative=trueのみ集計(同一事象へ統合された記事は代表記事1件分としてカウントする)。
+  // 除外候補(ノイズルール一致・ユーザー報告)は一覧非表示にしたので集計からも除く。
   const { data: allArticleData } = await supabase
     .from("articles")
     .select(`id, source_type, is_read, relevance, is_important, article_stocks!inner(stock_id)`)
     .eq("article_stocks.stock_id", stock.id)
     .eq("is_event_representative", true)
+    .not("exclusion_candidate", "is", true)
+    .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)")
     .limit(2000);
 
   const allArticles = allArticleData ?? [];
@@ -107,6 +110,13 @@ export default async function StockPage({
     .eq("is_event_representative", true)
     .order("published_at", { ascending: false })
     .limit(100);
+
+  // 除外候補タブ以外は、ノイズルール一致・ユーザー報告による除外対象を隠す
+  if (tab !== "excluded") {
+    filteredQuery = filteredQuery
+      .not("exclusion_candidate", "is", true)
+      .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)");
+  }
 
   if (tab === "tdnet")    filteredQuery = filteredQuery.eq("source_type", "tdnet");
   else if (tab === "edinet")   filteredQuery = filteredQuery.eq("source_type", "edinet");
