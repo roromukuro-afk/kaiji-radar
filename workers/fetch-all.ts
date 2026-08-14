@@ -553,7 +553,7 @@ async function main() {
         const existing = await findExistingArticle(item.url);
         if (existing) { src.jp_news.skipped++; continue; }
 
-        const match = quickKeywordMatch(
+        const km = quickKeywordMatch(
           item.title + (item.summary ?? ""),
           stock.name,
           stock.code,
@@ -564,10 +564,12 @@ async function main() {
         // 常にAIで判定させる
         const forceAi = profile?.force_ai_relevance_check === true;
 
-        let relevance: "certain" | "uncertain" | "irrelevant" = match ? "certain" : "uncertain";
+        // 社名/銘柄コードそのものの一致だけをAI省略可の強い根拠とする。
+        // jp_keywordsのみでの一致は(業界共通語を含みうるため)必ずAIで確認する。
+        let relevance: "certain" | "uncertain" | "irrelevant" = km.matchedNameOrCode ? "certain" : "uncertain";
         let relevanceReason = "";
 
-        if (!match || forceAi) {
+        if (!km.matchedNameOrCode || forceAi) {
           const check = await checkRelevance(
             item.title, item.summary, stock.code, stock.name, profile?.jp_keywords ?? []
           );
@@ -658,7 +660,7 @@ async function main() {
         const existing = await findExistingArticle(item.url);
         if (existing) { src.en_news.skipped++; continue; }
 
-        const match = quickKeywordMatch(
+        const km = quickKeywordMatch(
           item.title + (item.summary ?? ""),
           stock.name_en ?? stock.name,
           stock.code,
@@ -666,11 +668,15 @@ async function main() {
         );
         const forceAi = profile?.force_ai_relevance_check === true;
 
-        let relevance: "certain" | "uncertain" | "irrelevant" = match ? "certain" : "uncertain";
+        // 社名/銘柄コードそのものの一致だけをAI省略可の強い根拠とする。
+        // en_keywordsは「steel」「insurance」等の業界共通語を含み、Google News検索の
+        // クエリそのものであるため、これだけでの一致は無関係な海外記事にも高確率で
+        // ヒットする。キーワードのみの一致は必ずAIで確認する。
+        let relevance: "certain" | "uncertain" | "irrelevant" = km.matchedNameOrCode ? "certain" : "uncertain";
         let relevanceReason = "";
         let titleJa: string | null = null;
 
-        if (!match || forceAi) {
+        if (!km.matchedNameOrCode || forceAi) {
           const check = await checkRelevance(
             item.title, item.summary, stock.code, stock.name,
             [...(profile?.jp_keywords ?? []), ...(profile?.en_keywords ?? [])]
@@ -760,10 +766,10 @@ async function main() {
           const existing = await findExistingArticle(item.url);
           if (existing) { src.official.skipped++; continue; }
 
-          const match = quickKeywordMatch(item.title, stock.name, stock.code, profile?.jp_keywords ?? []);
-          let relevance: "certain" | "uncertain" | "irrelevant" = match ? "certain" : "uncertain";
+          const km = quickKeywordMatch(item.title, stock.name, stock.code, profile?.jp_keywords ?? []);
+          let relevance: "certain" | "uncertain" | "irrelevant" = km.matchedNameOrCode ? "certain" : "uncertain";
           let relevanceReason = "";
-          if (!match) {
+          if (!km.matchedNameOrCode) {
             const check = await checkRelevance(item.title, null, stock.code, stock.name, profile?.jp_keywords ?? []);
             relevance = check.result;
             relevanceReason = check.reason;

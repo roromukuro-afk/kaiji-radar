@@ -76,15 +76,29 @@ export async function translateTitleJa(englishTitle: string): Promise<string> {
   return text?.trim() || englishTitle;
 }
 
-// キーワードマッチによる高速事前フィルタ (AI不要)
+export interface KeywordMatch {
+  /** 何らかの形で一致した(社名/銘柄コード/キーワードのいずれか) */
+  matched: boolean;
+  /** 社名または銘柄コードそのものに一致(=AI判定を省略してよいほど強い根拠) */
+  matchedNameOrCode: boolean;
+}
+
+// キーワードマッチによる高速事前フィルタ。
+// 社名/銘柄コードの一致はAI省略可(certain確定)だが、業界共通語のような
+// キーワードリストのみの一致はAI省略の根拠にしない(「鉄」「保険」「タイヤ」等の
+// 一般名詞はGoogle Newsの検索語そのものであり、無関係な記事にも高確率で
+// ヒットするため。ここでcertain扱いにすると無関係な海外ニュースが大量に
+// 「関連あり」として保存・通知される)。
 export function quickKeywordMatch(
   text: string,
   stockName: string,
   stockCode: string,
   keywords: string[]
-): boolean {
+): KeywordMatch {
   const haystack = text.toLowerCase();
-  if (haystack.includes(stockName.toLowerCase())) return true;
-  if (haystack.includes(stockCode)) return true;
-  return keywords.some((kw) => kw.length >= 2 && haystack.includes(kw.toLowerCase()));
+  if (haystack.includes(stockName.toLowerCase()) || haystack.includes(stockCode.toLowerCase())) {
+    return { matched: true, matchedNameOrCode: true };
+  }
+  const keywordHit = keywords.some((kw) => kw.length >= 2 && haystack.includes(kw.toLowerCase()));
+  return { matched: keywordHit, matchedNameOrCode: false };
 }
