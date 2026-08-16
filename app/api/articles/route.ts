@@ -128,7 +128,8 @@ export async function GET(request: Request) {
       is_read, is_update, is_pdf, doc_type, relevance, notification_sent,
       notification_failed_count, created_at, user_relevance, exclusion_candidate,
       is_important, event_type, importance, importance_reason, importance_source,
-      event_group_id, is_event_representative, article_events (member_count),
+      event_group_id, is_event_representative,
+      article_events!articles_event_group_id_fkey (member_count),
       article_stocks!inner (stock_id, stocks!inner (id, code, name))
     `, { count: "exact" })
     .order("published_at", { ascending: false })

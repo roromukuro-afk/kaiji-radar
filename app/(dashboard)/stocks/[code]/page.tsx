@@ -103,7 +103,7 @@ export default async function StockPage({
     .from("articles")
     .select(`
       id, source_type, title, title_ja, publisher, published_at, is_read, is_pdf, is_important, event_type, importance, relevance, is_overseas,
-      article_events (member_count),
+      article_events!articles_event_group_id_fkey (member_count),
       article_stocks!inner (stock_id)
     `)
     .eq("article_stocks.stock_id", stock.id)
