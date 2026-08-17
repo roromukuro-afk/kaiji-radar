@@ -6,6 +6,13 @@ on:
     - cron: "5 * * * *"
   workflow_dispatch:
 
+# 前回実行が(取りこぼし回収等で)長引いている間に次のスケジュール実行が
+# 重なって同時に走ると、Gemini APIレート制限の競合やsource_checkpoints
+# 更新の競合が起きるため、前回終了までキューで待たせる(取り消しはしない)。
+concurrency:
+  group: hourly-fetch
+  cancel-in-progress: false
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
