@@ -7,6 +7,7 @@ import { EVENT_TYPES, eventTypeLabel } from "@/lib/classifiers/event-type";
 import { IMPORTANCE_TIERS, importanceLabel } from "@/lib/classifiers/importance";
 import Link from "next/link";
 import { PushNotificationButton } from "@/components/PushNotificationButton";
+import { ShareAllUnreadButton } from "./ShareAllUnreadButton";
 
 type Article = {
   id: string;
@@ -505,6 +506,8 @@ export default function FeedPage() {
           )}
         </div>
       )}
+
+      <ShareAllUnreadButton unreadCount={unreadCount} />
 
       {/* Article list */}
       {loading && articles.length === 0 ? (
