@@ -6,6 +6,7 @@ import Link from "next/link";
 import { NotifyEventTypesSettings } from "./NotifyEventTypesSettings";
 import { RssUrlsSettings } from "./RssUrlsSettings";
 import { IrSourcesSettings } from "./IrSourcesSettings";
+import { ShareUnreadToChatGptButton } from "./ShareUnreadToChatGptButton";
 
 type TabKey = "all" | "important" | "tdnet" | "edinet" | "official" | "pr_times" | "jp_news" | "en_news" | "uncertain" | "excluded";
 
@@ -131,6 +132,23 @@ export default async function StockPage({
   const { data: articles } = await filteredQuery;
   const filteredArticles = (articles ?? []) as ArticleRow[];
 
+  // 未読記事は銘柄ごとにまとまって届くことが多いため、1件ずつではなく
+  // まとめてChatGPTへ共有できるようにする(タブの絞り込みに関わらず全未読が対象)。
+  const { data: unreadForShareData } = await supabase
+    .from("articles")
+    .select(`
+      id, title, title_ja, is_overseas, published_at, source_type, source_url,
+      article_stocks!inner (stock_id)
+    `)
+    .eq("article_stocks.stock_id", stock.id)
+    .eq("is_event_representative", true)
+    .eq("is_read", false)
+    .not("exclusion_candidate", "is", true)
+    .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)")
+    .order("published_at", { ascending: false })
+    .limit(30);
+  const unreadForShare = unreadForShareData ?? [];
+
   const { data: irSources } = await supabase
     .from("stock_ir_sources")
     .select("id, url, enabled, last_checked_at, last_success_at, consecutive_failures, last_error")
@@ -212,6 +230,11 @@ export default async function StockPage({
             </div>
           ))}
         </div>
+
+        <ShareUnreadToChatGptButton
+          stockLabel={`${stock.code} ${stock.name}`}
+          articles={unreadForShare}
+        />
 
         {/* ── Tab row ── */}
         <div className="flex gap-1 flex-wrap">
