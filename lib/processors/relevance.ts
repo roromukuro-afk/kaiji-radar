@@ -79,16 +79,17 @@ export async function translateTitleJa(englishTitle: string): Promise<string> {
 export interface KeywordMatch {
   /** 何らかの形で一致した(社名/銘柄コード/キーワードのいずれか) */
   matched: boolean;
-  /** 社名または銘柄コードそのものに一致(=AI判定を省略してよいほど強い根拠) */
+  /** 社名そのものに一致(=AI判定を省略してよいほど強い根拠) */
   matchedNameOrCode: boolean;
 }
 
 // キーワードマッチによる高速事前フィルタ。
-// 社名/銘柄コードの一致はAI省略可(certain確定)だが、業界共通語のような
-// キーワードリストのみの一致はAI省略の根拠にしない(「鉄」「保険」「タイヤ」等の
-// 一般名詞はGoogle Newsの検索語そのものであり、無関係な記事にも高確率で
-// ヒットするため。ここでcertain扱いにすると無関係な海外ニュースが大量に
-// 「関連あり」として保存・通知される)。
+// 社名の一致はAI省略可(certain確定)だが、銘柄コードや業界共通語の
+// キーワードリストのみの一致はAI省略の根拠にしない。
+// 日本株の銘柄コードは4桁の裸の数字で、製品型番・西暦・スポーツクラブの
+// 創設年(例: 1911 = 住友林業のコードだが「Springfield Armory 1911」
+// 「Kiev, 1911」「Solbiatese Calcio 1911」等と無差別に一致する)等に
+// 高確率で誤爆するため、社名ほど信頼できる根拠にならない。
 export function quickKeywordMatch(
   text: string,
   stockName: string,
@@ -96,9 +97,11 @@ export function quickKeywordMatch(
   keywords: string[]
 ): KeywordMatch {
   const haystack = text.toLowerCase();
-  if (haystack.includes(stockName.toLowerCase()) || haystack.includes(stockCode.toLowerCase())) {
+  if (haystack.includes(stockName.toLowerCase())) {
     return { matched: true, matchedNameOrCode: true };
   }
-  const keywordHit = keywords.some((kw) => kw.length >= 2 && haystack.includes(kw.toLowerCase()));
+  const keywordHit =
+    haystack.includes(stockCode.toLowerCase()) ||
+    keywords.some((kw) => kw.length >= 2 && haystack.includes(kw.toLowerCase()));
   return { matched: keywordHit, matchedNameOrCode: false };
 }
