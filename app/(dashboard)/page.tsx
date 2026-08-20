@@ -41,7 +41,7 @@ type Stock = {
   name: string;
 };
 
-const SOURCE_TYPES = ["tdnet", "edinet", "official", "pr_times", "jp_news", "en_news"] as const;
+const SOURCE_TYPES = ["tdnet", "edinet", "sec_edgar", "official", "pr_times", "jp_news", "en_news"] as const;
 
 type DateRange = "24h" | "7d" | "30d" | "all";
 

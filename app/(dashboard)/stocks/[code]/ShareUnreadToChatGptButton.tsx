@@ -21,6 +21,7 @@ interface Props {
 const SOURCE_LABELS: Record<string, string> = {
   tdnet: "TDnet",
   edinet: "EDINET",
+  sec_edgar: "SEC EDGAR",
   official: "公式",
   pr_times: "PR TIMES",
   jp_news: "国内",

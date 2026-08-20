@@ -43,7 +43,7 @@ export const GLOBAL_PROTECT_KEYWORDS: string[] = [
   "格付", "出資", "売却", "譲渡", "経営", "代表取締役", "ガバナンス",
 ];
 
-const SAFE_SOURCE_TYPES = new Set(["tdnet", "edinet", "official"]);
+const SAFE_SOURCE_TYPES = new Set(["tdnet", "edinet", "official", "sec_edgar"]);
 
 /**
  * 安全ソースか判定 (TDnet/EDINET/公式は絶対除外しない)

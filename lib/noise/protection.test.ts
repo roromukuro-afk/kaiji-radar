@@ -2,10 +2,11 @@ import { describe, it, expect } from "vitest";
 import { isSafeSource, matchesProtection, uniqueProtectCount } from "./protection";
 
 describe("isSafeSource", () => {
-  it("tdnet/edinet/officialは安全ソース", () => {
+  it("tdnet/edinet/official/sec_edgarは安全ソース", () => {
     expect(isSafeSource("tdnet")).toBe(true);
     expect(isSafeSource("edinet")).toBe(true);
     expect(isSafeSource("official")).toBe(true);
+    expect(isSafeSource("sec_edgar")).toBe(true);
   });
   it("jp_news/en_news/pr_timesは安全ソースではない", () => {
     expect(isSafeSource("jp_news")).toBe(false);

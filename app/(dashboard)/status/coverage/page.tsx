@@ -4,7 +4,7 @@ import Link from "next/link";
 import { formatRelative, sourceTypeLabel } from "@/lib/utils";
 import { deriveCoverageStatus, COVERAGE_STATUS_LABEL, type CoverageStatus } from "@/lib/coverage/status";
 
-const SOURCE_TYPES = ["tdnet", "edinet", "official", "pr_times", "jp_news", "en_news"] as const;
+const SOURCE_TYPES = ["tdnet", "edinet", "sec_edgar", "official", "pr_times", "jp_news", "en_news"] as const;
 
 const STATUS_COLOR: Record<CoverageStatus, string> = {
   normal: "bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200",

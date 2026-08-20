@@ -22,6 +22,7 @@ import {
   stockCodeToSecCode,
   docTypeLabel,
 } from "../lib/fetchers/edinet.js";
+import { fetchSecEdgarFilings, formLabel as secFormLabel } from "../lib/fetchers/sec-edgar.js";
 import {
   fetchGoogleNewsJP,
   fetchGoogleNewsEN,
@@ -79,6 +80,7 @@ interface StockRecord {
   name_en: string | null;
   edinet_code: string | null;
   sec_code: string | null;
+  cik: string | null;
   stock_profiles: StockProfile | null;
 }
 
@@ -119,6 +121,7 @@ async function main() {
   const SOURCE_RECOVERY_CAP_HOURS: Record<string, number> = {
     tdnet: 48,
     edinet: 168, // EDINETは日付単位の取得のため、他より広めの上限にする
+    sec_edgar: 168, // SEC EDGARも同様に広めの上限
     jp_news: 48,
     en_news: 48,
     pr_times: 48,
@@ -139,6 +142,7 @@ async function main() {
   }
   const tdnetWindow = sourceWindow("tdnet");
   const edinetWindow = sourceWindow("edinet");
+  const secEdgarWindow = sourceWindow("sec_edgar");
   const jpNewsWindow = sourceWindow("jp_news");
   const enNewsWindow = sourceWindow("en_news");
   const prTimesWindow = sourceWindow("pr_times");
@@ -146,6 +150,7 @@ async function main() {
   const recoverySpans = {
     tdnet: { lookback_hours: tdnetWindow.lookbackHours, is_recovery: tdnetWindow.isRecovery },
     edinet: { lookback_hours: edinetWindow.lookbackHours, is_recovery: edinetWindow.isRecovery },
+    sec_edgar: { lookback_hours: secEdgarWindow.lookbackHours, is_recovery: secEdgarWindow.isRecovery },
     jp_news: { lookback_hours: jpNewsWindow.lookbackHours, is_recovery: jpNewsWindow.isRecovery },
     en_news: { lookback_hours: enNewsWindow.lookbackHours, is_recovery: enNewsWindow.isRecovery },
     pr_times: { lookback_hours: prTimesWindow.lookbackHours, is_recovery: prTimesWindow.isRecovery },
@@ -166,7 +171,7 @@ async function main() {
   const { data: stocks, error: stocksErr } = await supabase
     .from("stocks")
     .select(`
-      id, code, name, name_en, edinet_code, sec_code,
+      id, code, name, name_en, edinet_code, sec_code, cik,
       stock_profiles (rss_urls, jp_keywords, en_keywords, official_url, ir_url, press_release_url, notify_event_types, force_ai_relevance_check)
     `)
     .eq("status", "active");
@@ -292,11 +297,12 @@ async function main() {
 
   const results = {
     per_source: {
-      tdnet:    mkSrc(),
-      edinet:   mkSrc(),
-      official: mkSrc(),
-      jp_news:  mkSrc(),
-      en_news:  mkSrc(),
+      tdnet:     mkSrc(),
+      edinet:    mkSrc(),
+      sec_edgar: mkSrc(),
+      official:  mkSrc(),
+      jp_news:   mkSrc(),
+      en_news:   mkSrc(),
     },
     errors: [] as string[],
   };
@@ -522,6 +528,73 @@ async function main() {
   }
   await recordCoverage(normalizedStocks.map((s) => s.id), "edinet", edinetErr === null, edinetErr);
   } // end EDINET key check
+
+  // ============================
+  // 2.5 SEC EDGAR (米国株の一次情報。TDnet/EDINETの米国版)
+  // ============================
+  //   cikが設定されている銘柄(米国上場企業)のみ対象。銘柄単位のAPIのため
+  //   1社ずつ取得し、個別の失敗が他銘柄に波及しないようにする。
+  console.log("[fetch-all] SEC EDGAR 取得開始");
+  await updateHealth("sec_edgar", "checking");
+
+  const secEdgarStocks = normalizedStocks.filter((s) => s.cik);
+  const secEdgarConfiguredMap: Record<string, boolean> = {};
+  for (const stock of normalizedStocks) secEdgarConfiguredMap[stock.id] = !!stock.cik;
+
+  let secEdgarErr: string | null = null;
+  if (secEdgarStocks.length > 0) {
+    try {
+      for (const stock of secEdgarStocks) {
+        try {
+          const items = await fetchSecEdgarFilings(stock.cik!, secEdgarWindow.since);
+
+          for (const item of items) {
+            src.sec_edgar.candidates++;
+            const r = await saveArticle({
+              source_type: "sec_edgar",
+              source_url: item.url,
+              title: `${secFormLabel(item.form)}: ${item.primaryDocDescription || item.form}`,
+              publisher: stock.name_en ?? stock.name,
+              published_at: item.filingDate.toISOString(),
+              summary: item.items ? `Items: ${item.items}` : null,
+              doc_type: item.form,
+              stock,
+              relevance: "certain",
+            });
+
+            if (r.outcome === "new") {
+              src.sec_edgar.saved++;
+              await notifyArticle(r.article, stock, notificationRules);
+            } else if (r.outcome === "duplicate") { src.sec_edgar.skipped++;
+            } else if (r.outcome === "updated")   { src.sec_edgar.updated++;
+            } else                                { src.sec_edgar.errors++; }
+          }
+          await recordCoverage([stock.id], "sec_edgar", true, null, secEdgarConfiguredMap);
+        } catch (err) {
+          console.error(`[SEC EDGAR] ${stock.code} (CIK ${stock.cik}) 取得失敗:`, err);
+          await recordCoverage([stock.id], "sec_edgar", false, String(err), secEdgarConfiguredMap);
+        }
+        // SECのフェアユースポリシー(10リクエスト/秒目安)に配慮し間隔を空ける
+        await sleep(300);
+      }
+      await updateHealth("sec_edgar", "ok");
+      await markSourceCheckpoint("sec_edgar");
+    } catch (err) {
+      secEdgarErr = String(err);
+      results.errors.push(`SEC EDGAR: ${err}`);
+      await handleSourceError("sec_edgar", String(err));
+    }
+  } else {
+    await updateHealth("sec_edgar", "ok");
+  }
+  // cikを持たない銘柄(=日本株)もカバレッジ上は「対象外」として記録しておく
+  await recordCoverage(
+    normalizedStocks.filter((s) => !s.cik).map((s) => s.id),
+    "sec_edgar",
+    secEdgarErr === null,
+    secEdgarErr,
+    secEdgarConfiguredMap
+  );
 
   // ============================
   // 3. 国内ニュース
@@ -849,10 +922,10 @@ async function main() {
   // Finalize job
   // ============================
   const durationSeconds = (Date.now() - startTime) / 1000;
-  const totalSaved    = src.tdnet.saved + src.edinet.saved + src.official.saved + src.jp_news.saved + src.en_news.saved;
-  const totalFound    = src.tdnet.candidates + src.edinet.candidates + src.official.candidates + src.jp_news.candidates + src.en_news.candidates;
-  const totalSkipped  = src.tdnet.skipped + src.edinet.skipped + src.official.skipped + src.jp_news.skipped + src.en_news.skipped;
-  const totalUpdated  = src.tdnet.updated + src.edinet.updated + src.official.updated + src.jp_news.updated + src.en_news.updated;
+  const totalSaved    = src.tdnet.saved + src.edinet.saved + src.sec_edgar.saved + src.official.saved + src.jp_news.saved + src.en_news.saved;
+  const totalFound    = src.tdnet.candidates + src.edinet.candidates + src.sec_edgar.candidates + src.official.candidates + src.jp_news.candidates + src.en_news.candidates;
+  const totalSkipped  = src.tdnet.skipped + src.edinet.skipped + src.sec_edgar.skipped + src.official.skipped + src.jp_news.skipped + src.en_news.skipped;
+  const totalUpdated  = src.tdnet.updated + src.edinet.updated + src.sec_edgar.updated + src.official.updated + src.jp_news.updated + src.en_news.updated;
 
   console.log(`[fetch-all] 完了: 対象銘柄=${normalizedStocks.length} 候補=${totalFound} 保存=${totalSaved} スキップ=${totalSkipped} 更新=${totalUpdated} 実行時間=${Math.round(durationSeconds)}s`);
 
@@ -875,11 +948,12 @@ async function main() {
           duration_seconds: Math.round(durationSeconds * 10) / 10,
           total: { candidates: totalFound, saved: totalSaved, skipped: totalSkipped, updated: totalUpdated },
           per_source: {
-            tdnet:    src.tdnet,
-            edinet:   src.edinet,
-            official: src.official,
-            jp_news:  src.jp_news,
-            en_news:  src.en_news,
+            tdnet:     src.tdnet,
+            edinet:    src.edinet,
+            sec_edgar: src.sec_edgar,
+            official:  src.official,
+            jp_news:   src.jp_news,
+            en_news:   src.en_news,
           },
           tdnet_diag: tdnetDiag,
           // 全情報源の自動取りこぼし回収(新規実装6): 各ソースが今回どれだけ遡及したか

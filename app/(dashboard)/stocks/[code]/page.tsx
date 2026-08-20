@@ -8,13 +8,14 @@ import { RssUrlsSettings } from "./RssUrlsSettings";
 import { IrSourcesSettings } from "./IrSourcesSettings";
 import { ShareUnreadToChatGptButton } from "./ShareUnreadToChatGptButton";
 
-type TabKey = "all" | "important" | "tdnet" | "edinet" | "official" | "pr_times" | "jp_news" | "en_news" | "uncertain" | "excluded";
+type TabKey = "all" | "important" | "tdnet" | "edinet" | "sec_edgar" | "official" | "pr_times" | "jp_news" | "en_news" | "uncertain" | "excluded";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "all",      label: "すべて" },
   { key: "important", label: "★重要" },
   { key: "tdnet",    label: "TDnet" },
   { key: "edinet",   label: "EDINET" },
+  { key: "sec_edgar", label: "SEC EDGAR" },
   { key: "official", label: "公式" },
   { key: "pr_times", label: "PR TIMES" },
   { key: "jp_news",  label: "国内" },
@@ -121,6 +122,7 @@ export default async function StockPage({
 
   if (tab === "tdnet")    filteredQuery = filteredQuery.eq("source_type", "tdnet");
   else if (tab === "edinet")   filteredQuery = filteredQuery.eq("source_type", "edinet");
+  else if (tab === "sec_edgar") filteredQuery = filteredQuery.eq("source_type", "sec_edgar");
   else if (tab === "jp_news")  filteredQuery = filteredQuery.eq("source_type", "jp_news");
   else if (tab === "en_news")  filteredQuery = filteredQuery.eq("source_type", "en_news");
   else if (tab === "official") filteredQuery = filteredQuery.eq("source_type", "official");

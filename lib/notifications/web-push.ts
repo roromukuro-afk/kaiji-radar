@@ -155,6 +155,7 @@ export function buildPushPayload(article: {
   const sourceLabels: Record<string, string> = {
     tdnet: "TDnet",
     edinet: "EDINET",
+    sec_edgar: "SEC EDGAR",
     official: "公式",
     jp_news: "国内",
     en_news: "海外",
