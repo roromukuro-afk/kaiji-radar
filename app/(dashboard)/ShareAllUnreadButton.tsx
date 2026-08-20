@@ -23,7 +23,7 @@ const SOURCE_LABELS: Record<string, string> = {
   en_news: "海外",
 };
 
-const LIMIT = 300;
+const LIMIT = 100;
 
 function buildGroupedShareText(articles: ShareArticle[]): string {
   const byStock = new Map<string, { label: string; items: ShareArticle[] }>();

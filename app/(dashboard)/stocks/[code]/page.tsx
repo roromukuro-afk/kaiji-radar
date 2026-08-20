@@ -148,7 +148,7 @@ export default async function StockPage({
     .not("exclusion_candidate", "is", true)
     .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)")
     .order("published_at", { ascending: false })
-    .limit(30);
+    .limit(100);
   const unreadForShare = unreadForShareData ?? [];
 
   const { data: irSources } = await supabase
