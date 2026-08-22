@@ -76,8 +76,11 @@ export function ShareAllUnreadButton({ onShared }: { onShared: () => void }) {
 
   // 既読/未読に関わらず常に使えるようにする(既読済みでもボタンは消えない)。
   // 未読が残っていれば、共有(コピー)完了後にそれだけ既読化する。
+  // 共有対象と同じ直近DAYS_BACK日分だけに絞る(範囲外の古い未読を勝手に
+  // 既読化しないようにするため)。
   async function markRemainingAsRead() {
-    await fetch("/api/articles", {
+    const publishedAfter = new Date(Date.now() - DAYS_BACK * 24 * 60 * 60 * 1000).toISOString();
+    await fetch(`/api/articles?published_after=${encodeURIComponent(publishedAfter)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mark_all_read: true }),

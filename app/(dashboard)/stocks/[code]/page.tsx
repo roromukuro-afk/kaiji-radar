@@ -8,6 +8,10 @@ import { RssUrlsSettings } from "./RssUrlsSettings";
 import { IrSourcesSettings } from "./IrSourcesSettings";
 import { ShareUnreadToChatGptButton } from "./ShareUnreadToChatGptButton";
 
+// ChatGPT共有: 蓄積が多い銘柄(例: 数千件規模)だと全件コピーが現実的でない
+// (貼り付け不可・巨大テキスト)ため、トップページと同じく直近30日分に絞る。
+const SHARE_DAYS_BACK = 30;
+
 type TabKey = "all" | "important" | "tdnet" | "edinet" | "sec_edgar" | "official" | "pr_times" | "jp_news" | "en_news" | "uncertain" | "excluded";
 
 const TABS: { key: TabKey; label: string }[] = [
@@ -135,9 +139,11 @@ export default async function StockPage({
   const filteredArticles = (articles ?? []) as ArticleRow[];
 
   // 記事は銘柄ごとにまとまって届くことが多いため、1件ずつではなく
-  // まとめてChatGPTへ共有できるようにする(タブの絞り込みに関わらず全件が対象、
+  // まとめてChatGPTへ共有できるようにする(タブの絞り込みに関わらず対象、
   // 既読/未読は問わない。既読になってもボタンが使えなくならないようにするため)。
-  // 件数の上限は設けず、1000件区切りでページングして全件取得する。
+  // 蓄積が多い銘柄だと全期間では数千件規模になり貼り付け不可能になるため、
+  // 直近SHARE_DAYS_BACK日分に絞る(それでも1000件を超えうるのでページングする)。
+  const shareSince = new Date(Date.now() - SHARE_DAYS_BACK * 24 * 60 * 60 * 1000).toISOString();
   const allArticlesForShare: {
     id: string;
     title: string;
@@ -159,6 +165,7 @@ export default async function StockPage({
       .eq("is_event_representative", true)
       .not("exclusion_candidate", "is", true)
       .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)")
+      .gte("published_at", shareSince)
       .order("published_at", { ascending: false })
       .range(shareOffset, shareOffset + 999);
     allArticlesForShare.push(...(page ?? []));
@@ -251,6 +258,7 @@ export default async function StockPage({
           stockId={stock.id}
           stockLabel={`${stock.code} ${stock.name}`}
           articles={allArticlesForShare}
+          daysBack={SHARE_DAYS_BACK}
         />
 
         {/* ── Tab row ── */}
