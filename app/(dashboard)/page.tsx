@@ -507,7 +507,7 @@ export default function FeedPage() {
         </div>
       )}
 
-      <ShareAllUnreadButton unreadCount={unreadCount} onShared={() => fetchArticles(0)} />
+      <ShareAllUnreadButton onShared={() => fetchArticles(0)} />
 
       {/* Article list */}
       {loading && articles.length === 0 ? (

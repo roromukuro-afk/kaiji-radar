@@ -134,22 +134,36 @@ export default async function StockPage({
   const { data: articles } = await filteredQuery;
   const filteredArticles = (articles ?? []) as ArticleRow[];
 
-  // 未読記事は銘柄ごとにまとまって届くことが多いため、1件ずつではなく
-  // まとめてChatGPTへ共有できるようにする(タブの絞り込みに関わらず全未読が対象)。
-  const { data: unreadForShareData } = await supabase
-    .from("articles")
-    .select(`
-      id, title, title_ja, is_overseas, published_at, source_type, source_url,
-      article_stocks!inner (stock_id)
-    `)
-    .eq("article_stocks.stock_id", stock.id)
-    .eq("is_event_representative", true)
-    .eq("is_read", false)
-    .not("exclusion_candidate", "is", true)
-    .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)")
-    .order("published_at", { ascending: false })
-    .limit(100);
-  const unreadForShare = unreadForShareData ?? [];
+  // 記事は銘柄ごとにまとまって届くことが多いため、1件ずつではなく
+  // まとめてChatGPTへ共有できるようにする(タブの絞り込みに関わらず全件が対象、
+  // 既読/未読は問わない。既読になってもボタンが使えなくならないようにするため)。
+  // 件数の上限は設けず、1000件区切りでページングして全件取得する。
+  const allArticlesForShare: {
+    id: string;
+    title: string;
+    title_ja: string | null;
+    is_overseas: boolean;
+    published_at: string | null;
+    source_type: string;
+    source_url: string | null;
+    is_read: boolean;
+  }[] = [];
+  for (let shareOffset = 0; ; shareOffset += 1000) {
+    const { data: page } = await supabase
+      .from("articles")
+      .select(`
+        id, title, title_ja, is_overseas, published_at, source_type, source_url, is_read,
+        article_stocks!inner (stock_id)
+      `)
+      .eq("article_stocks.stock_id", stock.id)
+      .eq("is_event_representative", true)
+      .not("exclusion_candidate", "is", true)
+      .or("user_relevance.is.null,and(user_relevance.neq.irrelevant,user_relevance.neq.different_company)")
+      .order("published_at", { ascending: false })
+      .range(shareOffset, shareOffset + 999);
+    allArticlesForShare.push(...(page ?? []));
+    if (!page || page.length < 1000) break;
+  }
 
   const { data: irSources } = await supabase
     .from("stock_ir_sources")
@@ -234,8 +248,9 @@ export default async function StockPage({
         </div>
 
         <ShareUnreadToChatGptButton
+          stockId={stock.id}
           stockLabel={`${stock.code} ${stock.name}`}
-          articles={unreadForShare}
+          articles={allArticlesForShare}
         />
 
         {/* ── Tab row ── */}
